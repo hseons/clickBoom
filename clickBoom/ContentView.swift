@@ -3,6 +3,7 @@ import Combine
 import CoreGraphics
 import ServiceManagement
 import Carbon
+import UniformTypeIdentifiers
 
 // MARK: - 点击效果样式
 enum EffectStyle: String, CaseIterable, Identifiable {
@@ -255,6 +256,39 @@ struct PresetSnapshot: Codable, Identifiable, Equatable {
     var distinguishMouseButtons: Bool? = nil
     var rightClickColorHex: String? = nil
     var middleClickColorHex: String? = nil
+}
+
+struct PresetArchive: Codable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var exportedAt: Date
+    var presets: [PresetSnapshot]
+}
+
+struct PresetImportSummary {
+    let added: Int
+    let updated: Int
+    let renamed: Int
+
+    var total: Int { added + updated }
+}
+
+enum PresetArchiveError: LocalizedError {
+    case unsupportedSchema(Int)
+    case emptyArchive
+    case fileTooLarge
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedSchema(let version):
+            return "预设文件版本 \(version) 暂不受支持"
+        case .emptyArchive:
+            return "预设文件里没有可导入的预设"
+        case .fileTooLarge:
+            return "预设文件超过 5 MB，已停止导入"
+        }
+    }
 }
 
 // MARK: - 1. 全局状态管理 (AppState)
@@ -746,6 +780,163 @@ class AppState: NSObject, ObservableObject {
         savedPresets.removeAll { $0.id == preset.id }
     }
 
+    func exportPresetArchive() throws -> Data {
+        let archive = PresetArchive(
+            schemaVersion: PresetArchive.currentSchemaVersion,
+            exportedAt: Date(),
+            presets: savedPresets
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(archive)
+    }
+
+    @discardableResult
+    func importPresetArchive(from data: Data) throws -> PresetImportSummary {
+        guard data.count <= 5 * 1024 * 1024 else {
+            throw PresetArchiveError.fileTooLarge
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let archive = try decoder.decode(PresetArchive.self, from: data)
+        guard archive.schemaVersion == PresetArchive.currentSchemaVersion else {
+            throw PresetArchiveError.unsupportedSchema(archive.schemaVersion)
+        }
+        guard !archive.presets.isEmpty else {
+            throw PresetArchiveError.emptyArchive
+        }
+
+        var merged = savedPresets
+        var added = 0
+        var updated = 0
+        var renamed = 0
+
+        for incoming in archive.presets.prefix(500) {
+            var preset = sanitizedPreset(incoming)
+            let requestedName = preset.name
+
+            if let index = merged.firstIndex(where: { $0.id == preset.id }) {
+                preset.name = uniquePresetName(
+                    requestedName,
+                    excludingID: preset.id,
+                    among: merged
+                )
+                if preset.name != requestedName { renamed += 1 }
+                merged[index] = preset
+                updated += 1
+            } else {
+                preset.name = uniquePresetName(
+                    requestedName,
+                    excludingID: nil,
+                    among: merged
+                )
+                if preset.name != requestedName { renamed += 1 }
+                merged.append(preset)
+                added += 1
+            }
+        }
+
+        savedPresets = merged
+        return PresetImportSummary(added: added, updated: updated, renamed: renamed)
+    }
+
+    private func sanitizedPreset(_ raw: PresetSnapshot) -> PresetSnapshot {
+        var preset = raw
+        let trimmedName = preset.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        preset.name = String(trimmedName.prefix(80))
+        if preset.name.isEmpty { preset.name = "导入预设" }
+
+        if EffectStyle(rawValue: preset.effect) == nil {
+            preset.effect = EffectStyle.spark.rawValue
+        }
+        preset.colorHex = normalizedHex(preset.colorHex, fallback: "#FFFFFF")
+        preset.count = min(20, max(3, preset.count))
+        preset.size = clamped(preset.size, range: 1...30, fallback: 10)
+        preset.radius = clamped(preset.radius, range: 5...100, fallback: 15)
+        preset.durationMs = clamped(preset.durationMs, range: 100...2000, fallback: 400)
+        preset.scale = clamped(preset.scale, range: 0.5...5, fallback: 1)
+        preset.emoji = String(preset.emoji.prefix(64))
+        if preset.emoji.isEmpty { preset.emoji = "✨" }
+
+        if let style = preset.trailStyle, TrailStyle(rawValue: style) == nil {
+            preset.trailStyle = nil
+        }
+        if let color = preset.trailColorHex {
+            preset.trailColorHex = normalizedHex(color, fallback: "#FFFFFF")
+        }
+        if let width = preset.trailWidth {
+            preset.trailWidth = clamped(width, range: 2...30, fallback: 10)
+        }
+        if let opacity = preset.trailOpacity {
+            preset.trailOpacity = clamped(opacity, range: 0.2...1, fallback: 1)
+        }
+        if let lifetime = preset.trailLifetimeMs {
+            preset.trailLifetimeMs = clamped(lifetime, range: 200...2000, fallback: 400)
+        }
+        if let trigger = preset.trailTriggerMode,
+           TrailTriggerMode(rawValue: trigger) == nil {
+            preset.trailTriggerMode = nil
+        }
+
+        if let color = preset.spotlightColorHex {
+            preset.spotlightColorHex = normalizedHex(color, fallback: "#66E8FF")
+        }
+        if let size = preset.spotlightSize {
+            preset.spotlightSize = clamped(size, range: 36...140, fallback: 72)
+        }
+        if let opacity = preset.spotlightOpacity {
+            preset.spotlightOpacity = clamped(opacity, range: 0.15...1, fallback: 0.58)
+        }
+        if let color = preset.rightClickColorHex {
+            preset.rightClickColorHex = normalizedHex(color, fallback: "#FF9F43")
+        }
+        if let color = preset.middleClickColorHex {
+            preset.middleClickColorHex = normalizedHex(color, fallback: "#B48CFF")
+        }
+        return preset
+    }
+
+    private func uniquePresetName(
+        _ proposedName: String,
+        excludingID: UUID?,
+        among presets: [PresetSnapshot]
+    ) -> String {
+        let names = Set(
+            presets
+                .filter { $0.id != excludingID }
+                .map(\.name)
+        )
+        guard names.contains(proposedName) else { return proposedName }
+
+        var index = 1
+        while true {
+            let suffix = index == 1 ? "（导入）" : "（导入 \(index)）"
+            let candidate = proposedName + suffix
+            if !names.contains(candidate) { return candidate }
+            index += 1
+        }
+    }
+
+    private func normalizedHex(_ raw: String, fallback: String) -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
+        guard hex.count == 6,
+              hex.allSatisfy(\.isHexDigit) else {
+            return fallback
+        }
+        return "#\(hex.uppercased())"
+    }
+
+    private func clamped(
+        _ value: Double,
+        range: ClosedRange<Double>,
+        fallback: Double
+    ) -> Double {
+        guard value.isFinite else { return fallback }
+        return min(range.upperBound, max(range.lowerBound, value))
+    }
+
     /// 恢复默认值：只重置效果参数和选项，不动「启用」开关和已保存的预设。
     func resetToDefaults() {
         effectColorHex = "#FFFFFF"
@@ -852,11 +1043,11 @@ nonisolated private func clickBoomHotKeyHandler(
 // MARK: - 应用信息
 enum AppInfo {
     static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.2"
     }
 
     static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "15"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "16"
     }
 
     static var version: String {
@@ -1534,6 +1725,7 @@ struct ControlPanelView: View {
     @State private var showResetConfirm = false
     @State private var showSavePreset = false
     @State private var presetName = ""
+    @State private var presetTransferMessage: String?
 
     private let quickColors = ["#FFFFFF", "#66E8FF", "#63F2CE", "#FF77C8", "#FFB45E", "#B48CFF"]
     private let quickEmojis = ["✨", "🔥", "💖", "🎉", "⚡", "💫", "🌸", "🫧"]
@@ -1559,6 +1751,59 @@ struct ControlPanelView: View {
     private func previewTrail() {
         guard let point = OverlayGeometry.mousePoint() else { return }
         EffectEngine.shared.previewTrailOnly(at: point)
+    }
+
+    private func importPresets() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "导入"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessing { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let data = try Data(contentsOf: url)
+                let summary = try appState.importPresetArchive(from: data)
+                presetTransferMessage = "导入完成：新增 \(summary.added) 个，更新 \(summary.updated) 个，同名改名 \(summary.renamed) 个。"
+            } catch {
+                presetTransferMessage = "导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func exportPresets() {
+        guard !appState.savedPresets.isEmpty else {
+            presetTransferMessage = "当前还没有自定义预设可以导出。"
+            return
+        }
+        do {
+            let data = try appState.exportPresetArchive()
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.canCreateDirectories = true
+            panel.nameFieldStringValue = "ClickBoom-Presets.json"
+            panel.prompt = "导出"
+            panel.begin { response in
+                guard response == .OK, let url = panel.url else { return }
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer {
+                    if accessing { url.stopAccessingSecurityScopedResource() }
+                }
+                do {
+                    try data.write(to: url, options: .atomic)
+                    presetTransferMessage = "已导出 \(appState.savedPresets.count) 个预设。"
+                } catch {
+                    presetTransferMessage = "导出失败：\(error.localizedDescription)"
+                }
+            }
+        } catch {
+            presetTransferMessage = "导出失败：\(error.localizedDescription)"
+        }
     }
     
     @ViewBuilder
@@ -1792,6 +2037,20 @@ struct ControlPanelView: View {
                                     .font(.system(size: 11, weight: .bold))
                                     .foregroundColor(.white.opacity(0.45))
                                 Spacer()
+                                Menu {
+                                    Button(action: importPresets) {
+                                        Label("导入预设…", systemImage: "square.and.arrow.down")
+                                    }
+                                    Button(action: exportPresets) {
+                                        Label("导出预设…", systemImage: "square.and.arrow.up")
+                                    }
+                                    .disabled(appState.savedPresets.isEmpty)
+                                } label: {
+                                    Label("导入 / 导出", systemImage: "arrow.up.arrow.down")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                                .menuStyle(.borderlessButton)
+                                .fixedSize()
                                 Button {
                                     presetName = ""
                                     showSavePreset = true
@@ -2197,6 +2456,16 @@ struct ControlPanelView: View {
             Button("取消", role: .cancel) { presetName = "" }
         } message: {
             Text("会保存当前效果、颜色、粒子、动画和 Emoji；同名预设直接覆盖。")
+        }
+        .alert("预设导入 / 导出", isPresented: Binding(
+            get: { presetTransferMessage != nil },
+            set: { isPresented in
+                if !isPresented { presetTransferMessage = nil }
+            }
+        )) {
+            Button("好") { presetTransferMessage = nil }
+        } message: {
+            Text(presetTransferMessage ?? "")
         }
     }
 }
