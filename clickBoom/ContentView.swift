@@ -1043,11 +1043,11 @@ nonisolated private func clickBoomHotKeyHandler(
 // MARK: - 应用信息
 enum AppInfo {
     static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.2"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.3"
     }
 
     static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "16"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "17"
     }
 
     static var version: String {
@@ -1374,18 +1374,17 @@ struct MenuBarQuickPanel: View {
         )
     }
 
-    /// 菜单栏窗口会按内容自适应高度；在小屏上限制上限并允许滚动，避免底部操作被截断。
-    private var maxPanelHeight: CGFloat {
+    /// MenuBarExtra 的窗口需要明确高度；只给 maxHeight 时偶尔会把弹窗压成一条空白横条。
+    private var panelHeight: CGFloat {
         let availableHeight = NSScreen.main?.visibleFrame.height ?? 900
-        return max(360, min(780, availableHeight - 32))
+        return max(320, min(760, availableHeight - 80))
     }
 
     var body: some View {
         ScrollView {
             panelContent
         }
-        .frame(width: 360)
-        .frame(maxHeight: maxPanelHeight)
+        .frame(width: 360, height: panelHeight)
         .scrollIndicators(.visible)
         .environment(\.locale, Locale(identifier: "zh-Hans"))
     }
