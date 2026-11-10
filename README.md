@@ -115,6 +115,12 @@ xcodebuild \
   build
 ```
 
+核心逻辑测试使用 XCTest，直接编译真实 App 模块：
+
+```bash
+swift test
+```
+
 如果 `xcode-select -p` 指向 CommandLineTools，需要先 `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`，或者临时指定：
 
 ```bash
@@ -178,19 +184,34 @@ NOTARY_PROFILE=clickboom \
 ```text
 clickBoom/
 ├── ContentView.swift       # SwiftUI 控制面板、全局监听和特效渲染
+├── PresetArchiveLogic.swift # 预设文件校验、规范化与合并
+├── AppVersion.swift        # 更新检查版本比较
+├── InputMapping.swift      # 鼠标按键与拖尾触发映射
 └── Assets.xcassets/        # 应用图标和颜色资源
 clickBoom.xcodeproj/        # Xcode 工程文件
+Tests/ClickBoomTests/       # 核心逻辑单元测试
+Package.swift               # SwiftPM 测试入口
 scripts/release.sh          # 打包 DMG（通用二进制，可选签名/公证）
 ```
 
-核心实现集中在 `ContentView.swift`：
+界面、监听和渲染主体仍集中在 `ContentView.swift`，可独立验证的规则已拆到纯逻辑文件：
 
 - `AppState`：保存开关和特效参数
 - `EffectStyle`：管理可用的效果样式
 - `EffectEngine`：创建和清理点击粒子，维护滑动拖尾轨迹
 - `EffectOverlayView`：通过 `Canvas` 和 `TimelineView` 绘制动画
+- `PresetArchiveCodec`：预设归档校验、参数规范化和合并
+- `AppVersionComparator`：语义化版本的逐段比较
+- `InputMapping`：鼠标按钮权限与拖尾触发规则
 
 ## 🗒️ 更新日志
+
+### 1.3.0
+
+- 新增 XCTest 测试入口与 11 个核心逻辑测试，覆盖预设归档兼容性、异常参数修复、合并改名、版本比较和鼠标输入映射
+- 把预设归档、版本比较和输入映射从界面主体抽成独立纯逻辑文件，降低后续修改特效与监听逻辑时的回归风险
+- 新增 PR 和 `main` 分支 CI：每次变更自动运行测试并构建 Debug App；Release 发版流程也会先跑测试
+- 预设 JSON schema、用户配置键和特效绘制行为保持不变，现有设置与自定义预设可以直接沿用
 
 ### 1.2.3
 

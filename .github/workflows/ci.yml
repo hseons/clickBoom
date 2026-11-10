@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 选用最新的 Xcode
+        run: |
+          set -euo pipefail
+          latest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "使用 $latest"
+          sudo xcode-select -s "$latest/Contents/Developer"
+
+      - name: 检查 macOS SDK
+        run: |
+          set -euo pipefail
+          sdk=$(xcrun --sdk macosx --show-sdk-version)
+          echo "macOS SDK: $sdk"
+          major=${sdk%%.*}
+          if [ "$major" -lt 26 ]; then
+            echo "::error::当前 runner 的 SDK 是 $sdk，项目需要 26.0。"
+            exit 1
+          fi
+
+      - name: 运行核心逻辑测试
+        run: swift test
+
+      - name: 构建 Debug App
+        run: |
+          xcodebuild \
+            -project clickBoom.xcodeproj \
+            -scheme clickBoom \
+            -configuration Debug \
+            -sdk macosx \
+            -derivedDataPath "$RUNNER_TEMP/clickboom-ci" \
+            CODE_SIGNING_ALLOWED=NO \
+            build

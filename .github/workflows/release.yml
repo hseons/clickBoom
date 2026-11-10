@@ -1,6 +1,6 @@
 name: Release
 
-# 推 tag（v1.2.3）时自动构建通用 DMG 并补到 Release；
+# 推 tag（v1.3.0）时自动构建通用 DMG 并补到 Release；
 # 也可以在 Actions 页面手动触发，只产出 workflow artifact。
 on:
   push:
@@ -33,6 +33,9 @@ jobs:
             echo "::error::当前 runner 的 SDK 是 $sdk，项目需要 26.0。请换用带 Xcode 26 的 runner，或本地执行 ./scripts/release.sh。"
             exit 1
           fi
+
+      - name: 运行核心逻辑测试
+        run: swift test
 
       - name: 构建 DMG（ad-hoc 签名）
         env:

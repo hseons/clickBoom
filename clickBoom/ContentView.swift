@@ -781,160 +781,17 @@ class AppState: NSObject, ObservableObject {
     }
 
     func exportPresetArchive() throws -> Data {
-        let archive = PresetArchive(
-            schemaVersion: PresetArchive.currentSchemaVersion,
-            exportedAt: Date(),
-            presets: savedPresets
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(archive)
+        try PresetArchiveCodec.encode(savedPresets)
     }
 
     @discardableResult
     func importPresetArchive(from data: Data) throws -> PresetImportSummary {
-        guard data.count <= 5 * 1024 * 1024 else {
-            throw PresetArchiveError.fileTooLarge
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let archive = try decoder.decode(PresetArchive.self, from: data)
-        guard archive.schemaVersion == PresetArchive.currentSchemaVersion else {
-            throw PresetArchiveError.unsupportedSchema(archive.schemaVersion)
-        }
-        guard !archive.presets.isEmpty else {
-            throw PresetArchiveError.emptyArchive
-        }
-
-        var merged = savedPresets
-        var added = 0
-        var updated = 0
-        var renamed = 0
-
-        for incoming in archive.presets.prefix(500) {
-            var preset = sanitizedPreset(incoming)
-            let requestedName = preset.name
-
-            if let index = merged.firstIndex(where: { $0.id == preset.id }) {
-                preset.name = uniquePresetName(
-                    requestedName,
-                    excludingID: preset.id,
-                    among: merged
-                )
-                if preset.name != requestedName { renamed += 1 }
-                merged[index] = preset
-                updated += 1
-            } else {
-                preset.name = uniquePresetName(
-                    requestedName,
-                    excludingID: nil,
-                    among: merged
-                )
-                if preset.name != requestedName { renamed += 1 }
-                merged.append(preset)
-                added += 1
-            }
-        }
-
-        savedPresets = merged
-        return PresetImportSummary(added: added, updated: updated, renamed: renamed)
-    }
-
-    private func sanitizedPreset(_ raw: PresetSnapshot) -> PresetSnapshot {
-        var preset = raw
-        let trimmedName = preset.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        preset.name = String(trimmedName.prefix(80))
-        if preset.name.isEmpty { preset.name = "导入预设" }
-
-        if EffectStyle(rawValue: preset.effect) == nil {
-            preset.effect = EffectStyle.spark.rawValue
-        }
-        preset.colorHex = normalizedHex(preset.colorHex, fallback: "#FFFFFF")
-        preset.count = min(20, max(3, preset.count))
-        preset.size = clamped(preset.size, range: 1...30, fallback: 10)
-        preset.radius = clamped(preset.radius, range: 5...100, fallback: 15)
-        preset.durationMs = clamped(preset.durationMs, range: 100...2000, fallback: 400)
-        preset.scale = clamped(preset.scale, range: 0.5...5, fallback: 1)
-        preset.emoji = String(preset.emoji.prefix(64))
-        if preset.emoji.isEmpty { preset.emoji = "✨" }
-
-        if let style = preset.trailStyle, TrailStyle(rawValue: style) == nil {
-            preset.trailStyle = nil
-        }
-        if let color = preset.trailColorHex {
-            preset.trailColorHex = normalizedHex(color, fallback: "#FFFFFF")
-        }
-        if let width = preset.trailWidth {
-            preset.trailWidth = clamped(width, range: 2...30, fallback: 10)
-        }
-        if let opacity = preset.trailOpacity {
-            preset.trailOpacity = clamped(opacity, range: 0.2...1, fallback: 1)
-        }
-        if let lifetime = preset.trailLifetimeMs {
-            preset.trailLifetimeMs = clamped(lifetime, range: 200...2000, fallback: 400)
-        }
-        if let trigger = preset.trailTriggerMode,
-           TrailTriggerMode(rawValue: trigger) == nil {
-            preset.trailTriggerMode = nil
-        }
-
-        if let color = preset.spotlightColorHex {
-            preset.spotlightColorHex = normalizedHex(color, fallback: "#66E8FF")
-        }
-        if let size = preset.spotlightSize {
-            preset.spotlightSize = clamped(size, range: 36...140, fallback: 72)
-        }
-        if let opacity = preset.spotlightOpacity {
-            preset.spotlightOpacity = clamped(opacity, range: 0.15...1, fallback: 0.58)
-        }
-        if let color = preset.rightClickColorHex {
-            preset.rightClickColorHex = normalizedHex(color, fallback: "#FF9F43")
-        }
-        if let color = preset.middleClickColorHex {
-            preset.middleClickColorHex = normalizedHex(color, fallback: "#B48CFF")
-        }
-        return preset
-    }
-
-    private func uniquePresetName(
-        _ proposedName: String,
-        excludingID: UUID?,
-        among presets: [PresetSnapshot]
-    ) -> String {
-        let names = Set(
-            presets
-                .filter { $0.id != excludingID }
-                .map(\.name)
+        let result = PresetArchiveCodec.merge(
+            try PresetArchiveCodec.decode(data),
+            into: savedPresets
         )
-        guard names.contains(proposedName) else { return proposedName }
-
-        var index = 1
-        while true {
-            let suffix = index == 1 ? "（导入）" : "（导入 \(index)）"
-            let candidate = proposedName + suffix
-            if !names.contains(candidate) { return candidate }
-            index += 1
-        }
-    }
-
-    private func normalizedHex(_ raw: String, fallback: String) -> String {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
-        guard hex.count == 6,
-              hex.allSatisfy(\.isHexDigit) else {
-            return fallback
-        }
-        return "#\(hex.uppercased())"
-    }
-
-    private func clamped(
-        _ value: Double,
-        range: ClosedRange<Double>,
-        fallback: Double
-    ) -> Double {
-        guard value.isFinite else { return fallback }
-        return min(range.upperBound, max(range.lowerBound, value))
+        savedPresets = result.presets
+        return result.summary
     }
 
     /// 恢复默认值：只重置效果参数和选项，不动「启用」开关和已保存的预设。
@@ -1043,11 +900,11 @@ nonisolated private func clickBoomHotKeyHandler(
 // MARK: - 应用信息
 enum AppInfo {
     static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0"
     }
 
     static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "17"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "18"
     }
 
     static var version: String {
@@ -1148,39 +1005,7 @@ final class UpdateChecker: ObservableObject {
 
     /// 逐段比较版本号，缺位补 0
     nonisolated static func isNewer(_ remote: String, than local: String) -> Bool {
-        let remoteVersion = parsedVersion(remote)
-        let localVersion = parsedVersion(local)
-        for i in 0..<max(remoteVersion.numbers.count, localVersion.numbers.count) {
-            let rv = i < remoteVersion.numbers.count ? remoteVersion.numbers[i] : 0
-            let lv = i < localVersion.numbers.count ? localVersion.numbers[i] : 0
-            if rv != lv { return rv > lv }
-        }
-        switch (remoteVersion.prerelease, localVersion.prerelease) {
-        case (nil, nil):
-            return false
-        case (.some, nil):
-            return false
-        case (nil, .some):
-            return true
-        case let (.some(remoteTag), .some(localTag)):
-            return remoteTag > localTag
-        }
-    }
-
-    private nonisolated static func parsedVersion(
-        _ rawVersion: String
-    ) -> (numbers: [Int], prerelease: String?) {
-        let withoutPrefix = rawVersion.hasPrefix("v") ? String(rawVersion.dropFirst()) : rawVersion
-        let parts = withoutPrefix.split(
-            separator: "-",
-            maxSplits: 1,
-            omittingEmptySubsequences: false
-        )
-        let numbers = parts[0].split(separator: ".").map { component in
-            Int(component.prefix { $0.isNumber }) ?? 0
-        }
-        let prerelease = parts.count > 1 && !parts[1].isEmpty ? String(parts[1]) : nil
-        return (numbers, prerelease)
+        AppVersionComparator.isNewer(remote, than: local)
     }
 }
 
@@ -3927,19 +3752,28 @@ final class GlobalMouseMonitor: ObservableObject {
 
     /// 右键 / 中键是否也出效果，交给设置决定
     private static func supports(_ event: NSEvent) -> Bool {
-        switch event.type {
-        case .rightMouseDown, .otherMouseDown:
-            return AppState.shared.rightClickEnabled
-        default:
-            return true
-        }
+        guard let kind = pointerInputKind(for: event.type) else { return false }
+        return InputMapping.supports(
+            kind,
+            rightClickEnabled: AppState.shared.rightClickEnabled
+        )
     }
 
     private static func buttonKind(for event: NSEvent) -> MouseButtonKind {
-        switch event.type {
-        case .rightMouseDown: return .right
-        case .otherMouseDown: return .middle
-        default: return .left
+        guard let kind = pointerInputKind(for: event.type) else { return .left }
+        return InputMapping.buttonKind(for: kind)
+    }
+
+    private static func pointerInputKind(for eventType: NSEvent.EventType) -> PointerInputKind? {
+        switch eventType {
+        case .leftMouseDown: return .leftDown
+        case .rightMouseDown: return .rightDown
+        case .otherMouseDown: return .otherDown
+        case .mouseMoved: return .mouseMoved
+        case .leftMouseDragged: return .leftDrag
+        case .rightMouseDragged: return .rightDrag
+        case .otherMouseDragged: return .otherDrag
+        default: return nil
         }
     }
 
@@ -4008,21 +3842,15 @@ final class GlobalMouseMonitor: ObservableObject {
 
     private static func shouldExtendTrail(for event: NSEvent) -> Bool {
         let state = AppState.shared
-        guard state.trailEnabled else { return false }
-        if (event.type == .rightMouseDragged || event.type == .otherMouseDragged),
-           !state.rightClickEnabled {
-            return false
-        }
-        switch state.trailTriggerMode {
-        case .always:
-            return true
-        case .dragging:
-            return event.type != .mouseMoved
-        case .optionKey:
-            return event.modifierFlags.contains(.option)
-        case .commandKey:
-            return event.modifierFlags.contains(.command)
-        }
+        guard let kind = pointerInputKind(for: event.type) else { return false }
+        return InputMapping.shouldExtendTrail(
+            for: kind,
+            triggerMode: state.trailTriggerMode,
+            optionPressed: event.modifierFlags.contains(.option),
+            commandPressed: event.modifierFlags.contains(.command),
+            trailEnabled: state.trailEnabled,
+            rightClickEnabled: state.rightClickEnabled
+        )
     }
 
     func stop() {
