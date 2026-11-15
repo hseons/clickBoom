@@ -16,5 +16,10 @@ fi
 awk -v version="$VERSION" '
   $0 ~ "^## \\[" version "\\]" { inside = 1; next }
   inside && /^## \[/ { exit }
-  inside { print }
+  inside {
+    # 跳过版本标题后的空行，避免 Release 说明以空行开头
+    if (!started && $0 == "") next
+    started = 1
+    print
+  }
 ' "$NOTES_FILE"
