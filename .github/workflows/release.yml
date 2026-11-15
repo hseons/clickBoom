@@ -58,7 +58,14 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --title "ClickBoom ${tag#v}" --generate-notes
+            # Release 说明来自 CHANGELOG.md 对应版本；没有记录时回退到 GitHub 自动生成
+            notes="$(./scripts/changelog-notes.sh "${tag#v}" CHANGELOG.md || true)"
+            if [ -n "$notes" ]; then
+              printf '%s\n' "$notes" > release-notes.md
+              gh release create "$tag" --title "ClickBoom ${tag#v}" --notes-file release-notes.md
+            else
+              gh release create "$tag" --title "ClickBoom ${tag#v}" --generate-notes
+            fi
           fi
           if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qE '^ClickBoom-.*\.dmg$'; then
             echo "Release $tag 已经有 DMG 附件，跳过上传（保留本地签名版本）"

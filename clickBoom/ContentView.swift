@@ -328,6 +328,7 @@ class AppState: NSObject, ObservableObject {
         static let hotkeyEnabled = "hotkeyEnabled"
         static let hotKeySpec = "hotKeySpec"
         static let excludedApps = "excludedApps"
+        static let autoSilenceInFullScreen = "autoSilenceInFullScreen"
         static let savedPresets = "savedPresets"
     }
 
@@ -433,6 +434,10 @@ class AppState: NSObject, ObservableObject {
             defaults.set(data, forKey: Key.excludedApps)
         }
     }
+    /// 前台 App 全屏时自动暂停特效：看电影、演示、录屏时不用手动收起来
+    @Published var autoSilenceInFullScreen: Bool = true {
+        didSet { defaults.set(autoSilenceInFullScreen, forKey: Key.autoSilenceInFullScreen) }
+    }
     @Published var savedPresets: [PresetSnapshot] = [] {
         didSet {
             guard let data = try? JSONEncoder().encode(savedPresets) else { return }
@@ -495,6 +500,9 @@ class AppState: NSObject, ObservableObject {
         if let data = d.data(forKey: Key.excludedApps),
            let decoded = try? JSONDecoder().decode([ExcludedApp].self, from: data) {
             excludedApps = decoded
+        }
+        if let value = d.object(forKey: Key.autoSilenceInFullScreen) as? Bool {
+            autoSilenceInFullScreen = value
         }
         if let data = d.data(forKey: Key.savedPresets),
            let decoded = try? JSONDecoder().decode([PresetSnapshot].self, from: data) {
@@ -827,6 +835,27 @@ class AppState: NSObject, ObservableObject {
         excludedApps = AppExclusionLogic.removing(app, from: excludedApps)
     }
 
+    /// 导出设置备份：快捷键 + 排除列表 + 全屏静默开关
+    func settingsBackup() -> SettingsBackup {
+        SettingsBackup(
+            hotKeySpec: hotKeySpec.storageValue,
+            hotKeyEnabled: hotkeyEnabled,
+            autoSilenceInFullScreen: autoSilenceInFullScreen,
+            excludedApps: excludedApps
+        )
+    }
+
+    /// 导入设置备份；非法快捷键组合会保留当前值，不会把快捷键弄失效。
+    func applySettingsBackup(_ backup: SettingsBackup) {
+        if let spec = HotKeySpec(storageValue: backup.hotKeySpec), spec.isValid {
+            hotKeySpec = spec
+        }
+        hotkeyEnabled = backup.hotKeyEnabled
+        autoSilenceInFullScreen = backup.autoSilenceInFullScreen
+        excludedApps = SettingsBackupLogic.mergingExclusions(backup.excludedApps)
+        HotKeyManager.shared.sync()
+    }
+
     /// 恢复默认值：只重置效果参数和选项，不动「启用」开关和已保存的预设。
     func resetToDefaults() {
         effectColorHex = "#FFFFFF"
@@ -857,6 +886,7 @@ class AppState: NSObject, ObservableObject {
         rightClickEnabled = true
         hotKeySpec = .default
         excludedApps = []
+        autoSilenceInFullScreen = true
         comboCount = 0
         HotKeyManager.shared.sync()
     }
@@ -887,6 +917,48 @@ final class HotKeyManager: ObservableObject {
         guard AppState.shared.hotkeyEnabled else { return }
         installHandlerIfNeeded()
 
+        guard let ref = register(spec) else {
+            // 常见原因：和系统或其他 App 已有的全局快捷键冲突
+            isRegistered = false
+            return
+        }
+        hotKeyRef = ref
+        isRegistered = true
+    }
+
+    /// 录制完成或恢复默认时调用：保存组合并立即按新组合注册。
+    func apply(_ spec: HotKeySpec) {
+        guard spec.isValid else { return }
+        AppState.shared.hotKeySpec = spec
+        AppState.shared.hotkeyEnabled = true
+        sync()
+    }
+
+    /// 录制完成时用：先探测组合能否注册成功，成功才保存。
+    /// 失败时恢复原组合并返回 false，避免用户选到被占用的组合后快捷键彻底失效。
+    @discardableResult
+    func applyProbed(_ spec: HotKeySpec) -> Bool {
+        guard spec.isValid else { return false }
+        let previous = AppState.shared.hotKeySpec
+
+        unregister()
+        if let ref = register(spec) {
+            installHandlerIfNeeded()
+            hotKeyRef = ref
+            isRegistered = true
+            AppState.shared.hotKeySpec = spec
+            AppState.shared.hotkeyEnabled = true
+            return true
+        }
+
+        // 被占用：保留原组合，重新注册回去
+        AppState.shared.hotKeySpec = previous
+        sync()
+        return false
+    }
+
+    /// 只尝试注册，不改任何状态；冲突时返回 nil。
+    private func register(_ spec: HotKeySpec) -> EventHotKeyRef? {
         var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: OSType(0x434C_4B42), id: 1)
         let status = RegisterEventHotKey(
@@ -897,21 +969,7 @@ final class HotKeyManager: ObservableObject {
             0,
             &ref
         )
-        if status == noErr {
-            hotKeyRef = ref
-            isRegistered = true
-        } else {
-            // 常见原因：和系统或其他 App 已有的全局快捷键冲突
-            isRegistered = false
-        }
-    }
-
-    /// 录制完成或恢复默认时调用：保存组合并立即按新组合注册。
-    func apply(_ spec: HotKeySpec) {
-        guard spec.isValid else { return }
-        AppState.shared.hotKeySpec = spec
-        AppState.shared.hotkeyEnabled = true
-        sync()
+        return status == noErr ? ref : nil
     }
 
     func resetToDefault() {
@@ -957,11 +1015,11 @@ nonisolated private func clickBoomHotKeyHandler(
 // MARK: - 应用信息
 enum AppInfo {
     static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0"
     }
 
     static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "19"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "20"
     }
 
     static var version: String {
@@ -1248,6 +1306,7 @@ struct MenuBarQuickPanel: View {
     @StateObject private var permission = InputPermission.shared
     @StateObject private var update = UpdateChecker.shared
     @StateObject private var hotkey = HotKeyManager.shared
+    @StateObject private var frontmostAppTracker = FrontmostAppTracker.shared
 
     private var particleCount: Binding<Double> {
         Binding(
@@ -1269,6 +1328,7 @@ struct MenuBarQuickPanel: View {
         .frame(width: 360, height: panelHeight)
         .scrollIndicators(.visible)
         .environment(\.locale, Locale(identifier: "zh-Hans"))
+        .onAppear { frontmostAppTracker.refreshFromFrontmost() }
     }
 
     private var panelContent: some View {
@@ -1487,6 +1547,30 @@ struct MenuBarQuickPanel: View {
                     .foregroundStyle(.orange)
             }
 
+            if let app = frontmostAppTracker.lastActiveApp {
+                let isExcluded = AppExclusionLogic.isExcluded(
+                    bundleID: app.bundleID,
+                    in: appState.excludedApps
+                )
+                Button {
+                    if isExcluded {
+                        appState.removeExcludedApp(app)
+                    } else {
+                        appState.addExcludedApp(app)
+                    }
+                } label: {
+                    Label(
+                        isExcluded ? "取消在「\(app.name)」中静默" : "在「\(app.name)」中静默",
+                        systemImage: isExcluded ? "eye" : "eye.slash"
+                    )
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help("在排除列表里增删这个 App，录屏、开会时就不会冒出特效")
+            }
+
             Divider()
 
             Button {
@@ -1615,6 +1699,8 @@ struct ControlPanelView: View {
     @State private var presetName = ""
     @State private var presetTransferMessage: String?
     @State private var selectableApps: [ExcludedApp] = []
+    @State private var exclusionSearchText = ""
+    @State private var settingsBackupMessage: String?
 
     private let quickColors = ["#FFFFFF", "#66E8FF", "#63F2CE", "#FF77C8", "#FFB45E", "#B48CFF"]
     private let quickEmojis = ["✨", "🔥", "💖", "🎉", "⚡", "💫", "🌸", "🫧"]
@@ -1640,6 +1726,26 @@ struct ControlPanelView: View {
     /// 重新读取当前运行中的 App，供「应用排除」菜单使用
     private func refreshSelectableApps() {
         selectableApps = AppExclusionLogic.selectableRunningApps(excluding: appState.excludedApps)
+    }
+
+    /// 按搜索词过滤已排除的 App（名称和 bundle id 都能搜）
+    private var filteredExcludedApps: [ExcludedApp] {
+        filterApps(appState.excludedApps)
+    }
+
+    /// 按搜索词过滤可添加的 App
+    private var filteredSelectableApps: [ExcludedApp] {
+        filterApps(selectableApps)
+    }
+
+    private func filterApps(_ apps: [ExcludedApp]) -> [ExcludedApp] {
+        let keyword = exclusionSearchText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !keyword.isEmpty else { return apps }
+        return apps.filter {
+            $0.name.lowercased().contains(keyword) || $0.bundleID.lowercased().contains(keyword)
+        }
     }
 
     private func previewTrail() {
@@ -1700,6 +1806,55 @@ struct ControlPanelView: View {
         }
     }
     
+    // MARK: - 设置备份（快捷键 + 排除列表）
+
+    private func exportSettingsBackup() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "ClickBoom-Settings.json"
+        panel.prompt = "导出"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessing { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let data = try SettingsBackupLogic.encode(appState.settingsBackup())
+                try data.write(to: url, options: .atomic)
+                settingsBackupMessage = "已导出设置备份。"
+            } catch {
+                settingsBackupMessage = "导出失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func importSettingsBackup() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "导入"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessing { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let data = try Data(contentsOf: url)
+                let backup = try SettingsBackupLogic.decode(data)
+                appState.applySettingsBackup(backup)
+                refreshSelectableApps()
+                settingsBackupMessage = "已导入：快捷键 \(appState.hotKeySpec.label)，排除 \(appState.excludedApps.count) 个 App。"
+            } catch {
+                settingsBackupMessage = "导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     @ViewBuilder
     private var updateStatusRow: some View {
         switch update.status {
@@ -2219,12 +2374,36 @@ struct ControlPanelView: View {
                                 .foregroundColor(.white.opacity(0.45))
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            if appState.excludedApps.isEmpty {
-                                Text("还没有排除任何 App")
+                            HStack(spacing: 6) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white.opacity(0.35))
+                                TextField("搜索 App", text: $exclusionSearchText)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 11))
+                                if !exclusionSearchText.isEmpty {
+                                    Button {
+                                        exclusionSearchText = ""
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 10))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundColor(.white.opacity(0.35))
+                                    .help("清空搜索")
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.07))
+                            .cornerRadius(7)
+
+                            if filteredExcludedApps.isEmpty {
+                                Text(exclusionSearchText.isEmpty ? "还没有排除任何 App" : "没有匹配的 App")
                                     .font(.system(size: 11))
                                     .foregroundColor(.white.opacity(0.3))
                             } else {
-                                ForEach(appState.excludedApps) { app in
+                                ForEach(filteredExcludedApps) { app in
                                     HStack(spacing: 8) {
                                         Image(systemName: "app.dashed")
                                             .font(.system(size: 12))
@@ -2253,11 +2432,11 @@ struct ControlPanelView: View {
                             }
 
                             Menu {
-                                if selectableApps.isEmpty {
-                                    Button("没有可添加的 App") {}
+                                if filteredSelectableApps.isEmpty {
+                                    Button(exclusionSearchText.isEmpty ? "没有可添加的 App" : "没有匹配的 App") {}
                                         .disabled(true)
                                 } else {
-                                    ForEach(selectableApps) { app in
+                                    ForEach(filteredSelectableApps) { app in
                                         Button(app.name) {
                                             appState.addExcludedApp(app)
                                             refreshSelectableApps()
@@ -2271,7 +2450,7 @@ struct ControlPanelView: View {
                             .menuStyle(.borderlessButton)
                             .fixedSize()
 
-                            Text("列表来自当前运行中的 App；应用有更新后重新打开面板即可刷新")
+                            Text("列表会跟随 App 启动、退出自动刷新，也可以在菜单栏快速面板里一键排除当前 App")
                                 .font(.system(size: 10))
                                 .foregroundColor(.white.opacity(0.3))
                                 .fixedSize(horizontal: false, vertical: true)
@@ -2299,6 +2478,17 @@ struct ControlPanelView: View {
                                     .buttonStyle(.link)
                                     .font(.system(size: 11))
                             }
+
+                            Divider().background(Color.white.opacity(0.1))
+
+                            Toggle("全屏时自动静默", isOn: $appState.autoSilenceInFullScreen)
+                                .toggleStyle(.switch)
+                                .tint(.green)
+
+                            Text("前台 App 全屏时暂停点击特效和拖尾，适合看电影、演示、录屏")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.45))
+                                .fixedSize(horizontal: false, vertical: true)
 
                             Divider().background(Color.white.opacity(0.1))
 
@@ -2356,6 +2546,28 @@ struct ControlPanelView: View {
                             }
 
                             updateStatusRow
+
+                            Divider().background(Color.white.opacity(0.1))
+
+                            HStack {
+                                Label("设置备份", systemImage: "externaldrive.badge.timemachine")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Spacer()
+                                Button("导出") { exportSettingsBackup() }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                Button("导入") { importSettingsBackup() }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                            }
+
+                            if let message = settingsBackupMessage {
+                                Text(message)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.white.opacity(0.55))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                     .padding(.horizontal, 20)
@@ -2442,6 +2654,15 @@ struct ControlPanelView: View {
             Text(presetTransferMessage ?? "")
         }
         .onAppear { refreshSelectableApps() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in
+            Task { @MainActor in refreshSelectableApps() }
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in
+            Task { @MainActor in refreshSelectableApps() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { @MainActor in refreshSelectableApps() }
+        }
     }
 }
 
@@ -2452,6 +2673,8 @@ struct HotKeyRecorderButton: View {
     @ObservedObject private var hotkey = HotKeyManager.shared
     @State private var isRecording = false
     @State private var monitor: Any?
+    /// 录制到的组合被别的 App 占用时短暂显示，恢复原来的文案
+    @State private var conflictMessage: String?
 
     var compact = false
 
@@ -2468,9 +2691,10 @@ struct HotKeyRecorderButton: View {
                     Image(systemName: "record.circle")
                         .font(.system(size: 9, weight: .bold))
                 }
-                Text(isRecording ? "按下快捷键…" : appState.hotKeySpec.label)
+                Text(isRecording ? "按下快捷键…" : (conflictMessage ?? appState.hotKeySpec.label))
                     .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
             }
+            .foregroundStyle(conflictMessage == nil ? Color.primary : Color.orange)
             .padding(.horizontal, 8)
             .padding(.vertical, compact ? 3 : 4)
             .background(
@@ -2492,6 +2716,7 @@ struct HotKeyRecorderButton: View {
     private func startRecording() {
         guard monitor == nil else { return }
         isRecording = true
+        conflictMessage = nil
         // 先注销旧快捷键：否则按到旧组合会直接触发开关，而不是被录制到
         hotkey.unregister()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
@@ -2511,7 +2736,18 @@ struct HotKeyRecorderButton: View {
     private func finishRecording(with spec: HotKeySpec) {
         stopMonitor()
         isRecording = false
-        hotkey.apply(spec)
+        if hotkey.applyProbed(spec) {
+            conflictMessage = nil
+        } else {
+            // 组合被占用：保留原快捷键，把提示挂在按钮上几秒
+            conflictMessage = "已被占用"
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                if conflictMessage == "已被占用" {
+                    conflictMessage = nil
+                }
+            }
+        }
     }
 
     private func cancelRecording() {
@@ -3972,18 +4208,25 @@ final class GlobalMouseMonitor: ObservableObject {
             guard Self.supports(event) else { return }
             let button = Self.buttonKind(for: event)
             DispatchQueue.main.async {
-                guard !Self.frontmostIsExcluded() else { return }
+                guard !Self.frontmostIsSilenced() else { return }
                 guard let point = OverlayGeometry.mousePoint() else { return }
                 engine?.trigger(at: point, button: button)
             }
         }
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak engine] event in
-            if Self.supports(event), !Self.frontmostIsExcluded(), let point = OverlayGeometry.mousePoint() {
+            if Self.supports(event), !Self.frontmostIsSilenced(), let point = OverlayGeometry.mousePoint() {
                 engine?.trigger(at: point, button: Self.buttonKind(for: event))
             }
             return event
         }
+    }
+
+    /// 是否静默：前台 App 在排除列表里，或「全屏自动静默」打开且前台 App 全屏。
+    private static func frontmostIsSilenced() -> Bool {
+        if frontmostIsExcluded() { return true }
+        guard AppState.shared.autoSilenceInFullScreen else { return false }
+        return FullScreenDetector.shared.isFrontmostAppFullScreen()
     }
 
     /// 当前前台 App 是否在排除列表里；命中时不出点击特效，也不延长拖尾
@@ -4064,7 +4307,7 @@ final class GlobalMouseMonitor: ObservableObject {
         }
 
         // 排除列表里的 App 不接收聚光环 / 拖尾
-        guard !Self.frontmostIsExcluded() else { return }
+        guard !Self.frontmostIsSilenced() else { return }
 
         let now = Date()
         guard now.timeIntervalSince(lastMotionDispatchTime) >= Self.motionDispatchInterval else { return }

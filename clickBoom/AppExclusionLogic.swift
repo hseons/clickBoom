@@ -5,11 +5,11 @@ import Foundation
 ///
 /// 录屏、视频会议、全屏游戏里往往不希望出现额外动画，
 /// 用 bundle id 记录比 App 名称稳定（名称会随语言和版本变化）。
-struct ExcludedApp: Codable, Identifiable, Hashable {
+nonisolated struct ExcludedApp: Codable, Identifiable, Hashable {
     var bundleID: String
     var name: String
 
-    nonisolated init(bundleID: String, name: String) {
+    init(bundleID: String, name: String) {
         self.bundleID = bundleID
         self.name = name
     }

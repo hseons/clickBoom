@@ -115,12 +115,22 @@ if [[ "${PUBLISH:-0}" == "1" ]]; then
   fi
   TAG="v$VERSION"
   echo "==> 发布到 GitHub Release：$TAG"
+
+  # Release 说明优先用 NOTES_FILE；没指定时从 CHANGELOG.md 提取当前版本段落
+  NOTES_TO_USE="${NOTES_FILE:-}"
+  if [[ -z "$NOTES_TO_USE" && -x scripts/changelog-notes.sh ]]; then
+    if notes="$(scripts/changelog-notes.sh "$VERSION")" && [[ -n "${notes//[[:space:]]/}" ]]; then
+      NOTES_TO_USE="$(mktemp "${TMPDIR:-/tmp}/clickboom-notes.XXXXXX")"
+      printf '%s\n' "$notes" > "$NOTES_TO_USE"
+    fi
+  fi
+
   if ! git ls-remote --tags --exit-code origin "$TAG" >/dev/null 2>&1; then
     echo "    提示：远端还没有 $TAG，gh 会按当前分支 HEAD 创建标签。"
   fi
   if ! gh release view "$TAG" >/dev/null 2>&1; then
-    if [[ -n "${NOTES_FILE:-}" ]]; then
-      gh release create "$TAG" --title "$APP_NAME $VERSION" --notes-file "$NOTES_FILE"
+    if [[ -n "$NOTES_TO_USE" ]]; then
+      gh release create "$TAG" --title "$APP_NAME $VERSION" --notes-file "$NOTES_TO_USE"
     else
       gh release create "$TAG" --title "$APP_NAME $VERSION" --generate-notes
     fi
