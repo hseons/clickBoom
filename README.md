@@ -32,7 +32,8 @@
 - 支持把自己的整套参数保存成自定义预设（同名覆盖），随时一键套用或删除
 - 支持把自定义预设导出为版本化 JSON 文件，并重新导入或跨设备合并；同名预设会自动保留副本
 - 支持暂停 15 / 30 / 60 分钟：演示中途临时关掉效果，到点自动恢复
-- 支持全局快捷键 ⌃⌥B：在任意 App 里快速开关特效
+- 支持自定义全局快捷键（默认 ⌃⌥B）：点一下直接按新的组合键，需包含 ⌃ / ⌥ / ⌘，可在任意 App 里快速开关特效
+- 支持「应用排除」列表：把录屏、会议或游戏 App 加进去后，在这些 App 里不出点击特效和拖尾，其他 App 照常工作
 - 支持调整粒子数量、大小、扩散半径、动画时长和缩放比例
 - 新增鼠标聚光环：录屏和演示时持续标出指针位置，支持自定义颜色、大小、透明度和点击脉冲
 - 支持区分左键、右键和中键，右键与中键可使用独立颜色
@@ -64,7 +65,7 @@
 
 ## 📦 安装
 
-1. 到 [Releases](https://github.com/hhse/clickBoom/releases) 下载最新的 `ClickBoom-x.y.z.dmg`。
+1. 到 [Releases](https://github.com/hseons/clickBoom/releases) 下载最新的 `ClickBoom-x.y.z.dmg`。
 2. 打开 DMG，把 ClickBoom 拖进「应用程序」。
 3. 首次打开时，如果看到「无法验证开发者」的提示，说明安装包还没有经过 Apple 公证。任选一种方式放行：
    - 在「应用程序」里 **右键点击 ClickBoom → 打开 → 再点「打开」**；
@@ -84,7 +85,7 @@
 1. 克隆仓库并进入项目目录：
 
    ```bash
-   git clone https://github.com/hhse/clickBoom.git
+   git clone https://github.com/hseons/clickBoom.git
    cd clickBoom
    ```
 
@@ -187,6 +188,8 @@ clickBoom/
 ├── PresetArchiveLogic.swift # 预设文件校验、规范化与合并
 ├── AppVersion.swift        # 更新检查版本比较
 ├── InputMapping.swift      # 鼠标按键与拖尾触发映射
+├── HotKeySettings.swift    # 全局快捷键的组合规则、文案与持久化
+├── AppExclusionLogic.swift # 应用排除列表的规范化与增删
 └── Assets.xcassets/        # 应用图标和颜色资源
 clickBoom.xcodeproj/        # Xcode 工程文件
 Tests/ClickBoomTests/       # 核心逻辑单元测试
@@ -203,8 +206,19 @@ scripts/release.sh          # 打包 DMG（通用二进制，可选签名/公证
 - `PresetArchiveCodec`：预设归档校验、参数规范化和合并
 - `AppVersionComparator`：语义化版本的逐段比较
 - `InputMapping`：鼠标按钮权限与拖尾触发规则
+- `HotKeySpec`：全局快捷键的合法组合、展示文案和存储格式
+- `AppExclusionLogic`：应用排除列表的规范化、去重与增删
 
 ## 🗒️ 更新日志
+
+### 1.4.0
+
+- 全局快捷键可以自己改了：点控制面板或菜单栏里的按键框，直接按新的组合键即可，支持字母、数字、符号、方向键和 F1–F12；修饰键需包含 ⌃ / ⌥ / ⌘，Esc 取消录制，非默认组合可一键恢复
+- 快捷键设置会持久化保存，重启 App 后继续沿用；换到被占用的组合时会给出「注册失败」提示
+- 新增「应用排除」：把录屏、视频会议或全屏游戏 App 加入列表后，在这些 App 里不再显示点击特效和滑动拖尾，前台切换即时生效
+- 排除列表按 bundle id 记录，导出/导入预设不受影响；列表来自当前运行中的 App，重新打开面板即可刷新
+- 修正仓库与更新检查链接（`hhse` → `hseons`），「检查更新」重新可用
+- 新增快捷键与应用排除的单元测试，测试总数从 11 个增加到 23 个
 
 ### 1.3.0
 
@@ -301,7 +315,7 @@ scripts/release.sh          # 打包 DMG（通用二进制，可选签名/公证
 
 ## 🔗 开源地址
 
-- GitHub：<https://github.com/hhse/clickBoom>
+- GitHub：<https://github.com/hseons/clickBoom>
 - 灵感来源：<https://reactbits.dev/animations/click-spark>
 
 欢迎提交 Issue、建议和 Pull Request，一起完善更多点击效果。

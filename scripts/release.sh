@@ -126,5 +126,5 @@ if [[ "${PUBLISH:-0}" == "1" ]]; then
     fi
   fi
   gh release upload "$TAG" "$OUT_DMG" --clobber
-  echo "==> 已发布：https://github.com/hhse/clickBoom/releases/tag/$TAG"
+  echo "==> 已发布：https://github.com/hseons/clickBoom/releases/tag/$TAG"
 fi

@@ -326,6 +326,8 @@ class AppState: NSObject, ObservableObject {
         static let customEmoji = "customEmoji"
         static let rightClickEnabled = "rightClickEnabled"
         static let hotkeyEnabled = "hotkeyEnabled"
+        static let hotKeySpec = "hotKeySpec"
+        static let excludedApps = "excludedApps"
         static let savedPresets = "savedPresets"
     }
 
@@ -420,6 +422,17 @@ class AppState: NSObject, ObservableObject {
     @Published var hotkeyEnabled: Bool = true {
         didSet { defaults.set(hotkeyEnabled, forKey: Key.hotkeyEnabled) }
     }
+    /// 开关特效的全局快捷键组合，默认 ⌃⌥B
+    @Published var hotKeySpec: HotKeySpec = .default {
+        didSet { defaults.set(hotKeySpec.storageValue, forKey: Key.hotKeySpec) }
+    }
+    /// 在这些 App 里静默：不播放点击特效和拖尾（录屏、会议、全屏游戏等）
+    @Published var excludedApps: [ExcludedApp] = [] {
+        didSet {
+            guard let data = try? JSONEncoder().encode(excludedApps) else { return }
+            defaults.set(data, forKey: Key.excludedApps)
+        }
+    }
     @Published var savedPresets: [PresetSnapshot] = [] {
         didSet {
             guard let data = try? JSONEncoder().encode(savedPresets) else { return }
@@ -476,6 +489,13 @@ class AppState: NSObject, ObservableObject {
         if let value = d.string(forKey: Key.customEmoji) { customEmoji = value }
         if let value = d.object(forKey: Key.rightClickEnabled) as? Bool { rightClickEnabled = value }
         if let value = d.object(forKey: Key.hotkeyEnabled) as? Bool { hotkeyEnabled = value }
+        if let value = HotKeySpec(storageValue: d.string(forKey: Key.hotKeySpec)) {
+            hotKeySpec = value
+        }
+        if let data = d.data(forKey: Key.excludedApps),
+           let decoded = try? JSONDecoder().decode([ExcludedApp].self, from: data) {
+            excludedApps = decoded
+        }
         if let data = d.data(forKey: Key.savedPresets),
            let decoded = try? JSONDecoder().decode([PresetSnapshot].self, from: data) {
             savedPresets = decoded
@@ -794,6 +814,19 @@ class AppState: NSObject, ObservableObject {
         return result.summary
     }
 
+    /// 加入应用排除列表；返回是否真的加入了（自己或重复项会被忽略）。
+    @discardableResult
+    func addExcludedApp(_ app: ExcludedApp) -> Bool {
+        let updated = AppExclusionLogic.adding(app, to: excludedApps)
+        guard updated != excludedApps else { return false }
+        excludedApps = updated
+        return true
+    }
+
+    func removeExcludedApp(_ app: ExcludedApp) {
+        excludedApps = AppExclusionLogic.removing(app, from: excludedApps)
+    }
+
     /// 恢复默认值：只重置效果参数和选项，不动「启用」开关和已保存的预设。
     func resetToDefaults() {
         effectColorHex = "#FFFFFF"
@@ -822,21 +855,32 @@ class AppState: NSObject, ObservableObject {
         comboBoostEnabled = false
         customEmoji = "✨"
         rightClickEnabled = true
+        hotKeySpec = .default
+        excludedApps = []
         comboCount = 0
+        HotKeyManager.shared.sync()
     }
 }
 
 // MARK: - 全局快捷键
 /// Carbon 的 RegisterEventHotKey 不需要额外权限，用来给「开关特效」绑一个全局快捷键。
+/// 组合本身存在 AppState 里，这里只负责按当前组合注册 / 注销。
 @MainActor
 final class HotKeyManager: ObservableObject {
     static let shared = HotKeyManager()
-    static let shortcutLabel = "⌃⌥B"
 
     @Published private(set) var isRegistered = false
 
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
+
+    var spec: HotKeySpec {
+        AppState.shared.hotKeySpec
+    }
+
+    var label: String {
+        spec.label
+    }
 
     func sync() {
         unregister()
@@ -846,8 +890,8 @@ final class HotKeyManager: ObservableObject {
         var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: OSType(0x434C_4B42), id: 1)
         let status = RegisterEventHotKey(
-            UInt32(kVK_ANSI_B),
-            UInt32(controlKey | optionKey),
+            spec.keyCode,
+            spec.modifiers,
             hotKeyID,
             GetApplicationEventTarget(),
             0,
@@ -857,8 +901,21 @@ final class HotKeyManager: ObservableObject {
             hotKeyRef = ref
             isRegistered = true
         } else {
+            // 常见原因：和系统或其他 App 已有的全局快捷键冲突
             isRegistered = false
         }
+    }
+
+    /// 录制完成或恢复默认时调用：保存组合并立即按新组合注册。
+    func apply(_ spec: HotKeySpec) {
+        guard spec.isValid else { return }
+        AppState.shared.hotKeySpec = spec
+        AppState.shared.hotkeyEnabled = true
+        sync()
+    }
+
+    func resetToDefault() {
+        apply(.default)
     }
 
     func unregister() {
@@ -900,11 +957,11 @@ nonisolated private func clickBoomHotKeyHandler(
 // MARK: - 应用信息
 enum AppInfo {
     static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4.0"
     }
 
     static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "18"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "19"
     }
 
     static var version: String {
@@ -933,7 +990,7 @@ final class UpdateChecker: ObservableObject {
         return false
     }
 
-    private let latestURL = URL(string: "https://api.github.com/repos/hhse/clickBoom/releases/latest")!
+    private let latestURL = URL(string: "https://api.github.com/repos/hseons/clickBoom/releases/latest")!
     private let lastCheckKey = "lastUpdateCheckAt"
 
     /// 启动时调用：距上次检查超过 interval 才真正请求，避免每次打开都打 GitHub。
@@ -1001,7 +1058,7 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
-    private let latestReleasesURL = URL(string: "https://github.com/hhse/clickBoom/releases")!
+    private let latestReleasesURL = URL(string: "https://github.com/hseons/clickBoom/releases")!
 
     /// 逐段比较版本号，缺位补 0
     nonisolated static func isNewer(_ remote: String, than local: String) -> Bool {
@@ -1410,13 +1467,20 @@ struct MenuBarQuickPanel: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.orange)
             }
-            Toggle("全局快捷键 \(HotKeyManager.shortcutLabel)", isOn: Binding(
+            Toggle("全局快捷键", isOn: Binding(
                 get: { appState.hotkeyEnabled },
                 set: { newValue in
                     appState.hotkeyEnabled = newValue
                     HotKeyManager.shared.sync()
                 }
             ))
+            HStack(spacing: 8) {
+                Text("开关特效的快捷键")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                HotKeyRecorderButton(compact: true)
+            }
             if appState.hotkeyEnabled, !hotkey.isRegistered {
                 Text("快捷键没注册上，可能被其他 App 占用了。")
                     .font(.system(size: 10))
@@ -1433,7 +1497,7 @@ struct MenuBarQuickPanel: View {
             }
             .buttonStyle(.plain)
 
-            Link(destination: URL(string: "https://github.com/hhse/clickBoom")!) {
+            Link(destination: URL(string: "https://github.com/hseons/clickBoom")!) {
                 Label("GitHub 开源地址", systemImage: "chevron.left.forwardslash.chevron.right")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1550,6 +1614,7 @@ struct ControlPanelView: View {
     @State private var showSavePreset = false
     @State private var presetName = ""
     @State private var presetTransferMessage: String?
+    @State private var selectableApps: [ExcludedApp] = []
 
     private let quickColors = ["#FFFFFF", "#66E8FF", "#63F2CE", "#FF77C8", "#FFB45E", "#B48CFF"]
     private let quickEmojis = ["✨", "🔥", "💖", "🎉", "⚡", "💫", "🌸", "🫧"]
@@ -1570,6 +1635,11 @@ struct ControlPanelView: View {
     private func previewEffect() {
         guard let point = OverlayGeometry.mousePoint() else { return }
         EffectEngine.shared.preview(at: point)
+    }
+
+    /// 重新读取当前运行中的 App，供「应用排除」菜单使用
+    private func refreshSelectableApps() {
+        selectableApps = AppExclusionLogic.selectableRunningApps(excluding: appState.excludedApps)
     }
 
     private func previewTrail() {
@@ -2097,7 +2167,15 @@ struct ControlPanelView: View {
 
                             Divider().background(Color.white.opacity(0.1))
 
-                            Toggle("全局快捷键 \(HotKeyManager.shortcutLabel)", isOn: Binding(
+                            HStack {
+                                Label("全局快捷键", systemImage: "command")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Spacer()
+                                HotKeyRecorderButton()
+                            }
+
+                            Toggle("启用快捷键", isOn: Binding(
                                 get: { appState.hotkeyEnabled },
                                 set: { newValue in
                                     appState.hotkeyEnabled = newValue
@@ -2106,9 +2184,17 @@ struct ControlPanelView: View {
                             ))
                             .toggleStyle(.switch)
                             .tint(.mint)
-                            Text("在任意 App 里按 \(HotKeyManager.shortcutLabel) 开关特效，不需要额外权限")
+                            Text("点按钮后直接按新的组合键（需含 ⌃ / ⌥ / ⌘），Esc 取消；当前 \(appState.hotKeySpec.label) 可在任意 App 里开关特效，不需要额外权限")
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.45))
+                                .fixedSize(horizontal: false, vertical: true)
+                            if appState.hotKeySpec != .default {
+                                Button("恢复默认 ⌃⌥B") {
+                                    HotKeyManager.shared.resetToDefault()
+                                }
+                                .buttonStyle(.link)
+                                .font(.system(size: 11))
+                            }
                             if appState.hotkeyEnabled, !hotkey.isRegistered {
                                 Label("注册失败，可能被其他 App 占用了", systemImage: "exclamationmark.triangle.fill")
                                     .font(.system(size: 11))
@@ -2125,6 +2211,70 @@ struct ControlPanelView: View {
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)
+                        }
+
+                        SectionCard(icon: "rectangle.on.rectangle.slash", title: "应用排除") {
+                            Text("在下列 App 里不显示点击特效和拖尾，适合录屏、视频会议或全屏游戏")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.45))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            if appState.excludedApps.isEmpty {
+                                Text("还没有排除任何 App")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.white.opacity(0.3))
+                            } else {
+                                ForEach(appState.excludedApps) { app in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "app.dashed")
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.white.opacity(0.5))
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(app.name)
+                                                .font(.system(size: 12, weight: .medium))
+                                                .foregroundColor(.white.opacity(0.85))
+                                            Text(app.bundleID)
+                                                .font(.system(size: 9, design: .monospaced))
+                                                .foregroundColor(.white.opacity(0.35))
+                                        }
+                                        Spacer()
+                                        Button {
+                                            appState.removeExcludedApp(app)
+                                            refreshSelectableApps()
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .font(.system(size: 12))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundColor(.white.opacity(0.35))
+                                        .help("从排除列表移除")
+                                    }
+                                }
+                            }
+
+                            Menu {
+                                if selectableApps.isEmpty {
+                                    Button("没有可添加的 App") {}
+                                        .disabled(true)
+                                } else {
+                                    ForEach(selectableApps) { app in
+                                        Button(app.name) {
+                                            appState.addExcludedApp(app)
+                                            refreshSelectableApps()
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Label("添加 App", systemImage: "plus.circle")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+
+                            Text("列表来自当前运行中的 App；应用有更新后重新打开面板即可刷新")
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.3))
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                         SectionCard(icon: "gearshape.2", title: "系统") {
@@ -2246,7 +2396,7 @@ struct ControlPanelView: View {
 
                     // 项目链接
                     HStack(spacing: 12) {
-                        Link(destination: URL(string: "https://github.com/hhse/clickBoom")!) {
+                        Link(destination: URL(string: "https://github.com/hseons/clickBoom")!) {
                             Label("GitHub 开源地址", systemImage: "chevron.left.forwardslash.chevron.right")
                         }
 
@@ -2291,6 +2441,91 @@ struct ControlPanelView: View {
         } message: {
             Text(presetTransferMessage ?? "")
         }
+        .onAppear { refreshSelectableApps() }
+    }
+}
+
+// MARK: - 快捷键录制
+/// 录制全局快捷键：点一下进入录制，按下带 ⌃ / ⌥ / ⌘ 的组合键生效，Esc 取消。
+struct HotKeyRecorderButton: View {
+    @ObservedObject private var appState = AppState.shared
+    @ObservedObject private var hotkey = HotKeyManager.shared
+    @State private var isRecording = false
+    @State private var monitor: Any?
+
+    var compact = false
+
+    var body: some View {
+        Button {
+            if isRecording {
+                cancelRecording()
+            } else {
+                startRecording()
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if isRecording {
+                    Image(systemName: "record.circle")
+                        .font(.system(size: 9, weight: .bold))
+                }
+                Text(isRecording ? "按下快捷键…" : appState.hotKeySpec.label)
+                    .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, compact ? 3 : 4)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isRecording ? Color.orange.opacity(0.22) : Color.white.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isRecording ? Color.orange.opacity(0.7) : Color.white.opacity(0.12), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(isRecording ? "按 Esc 取消" : "点击后直接按新的快捷键组合（需含 ⌃ / ⌥ / ⌘）")
+        .onDisappear {
+            if isRecording { cancelRecording() }
+        }
+    }
+
+    private func startRecording() {
+        guard monitor == nil else { return }
+        isRecording = true
+        // 先注销旧快捷键：否则按到旧组合会直接触发开关，而不是被录制到
+        hotkey.unregister()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            if Int(event.keyCode) == kVK_Escape {
+                cancelRecording()
+                return nil
+            }
+            guard let spec = HotKeySpec.from(keyCode: event.keyCode, modifierFlags: event.modifierFlags) else {
+                // 只按了修饰键，或没带 ⌃ / ⌥ / ⌘：继续等下一个组合键
+                return nil
+            }
+            finishRecording(with: spec)
+            return nil
+        }
+    }
+
+    private func finishRecording(with spec: HotKeySpec) {
+        stopMonitor()
+        isRecording = false
+        hotkey.apply(spec)
+    }
+
+    private func cancelRecording() {
+        stopMonitor()
+        isRecording = false
+        // 取消后按原组合重新注册，避免快捷键开关失效
+        hotkey.sync()
+    }
+
+    private func stopMonitor() {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        monitor = nil
     }
 }
 
@@ -3737,17 +3972,28 @@ final class GlobalMouseMonitor: ObservableObject {
             guard Self.supports(event) else { return }
             let button = Self.buttonKind(for: event)
             DispatchQueue.main.async {
+                guard !Self.frontmostIsExcluded() else { return }
                 guard let point = OverlayGeometry.mousePoint() else { return }
                 engine?.trigger(at: point, button: button)
             }
         }
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak engine] event in
-            if Self.supports(event), let point = OverlayGeometry.mousePoint() {
+            if Self.supports(event), !Self.frontmostIsExcluded(), let point = OverlayGeometry.mousePoint() {
                 engine?.trigger(at: point, button: Self.buttonKind(for: event))
             }
             return event
         }
+    }
+
+    /// 当前前台 App 是否在排除列表里；命中时不出点击特效，也不延长拖尾
+    private static func frontmostIsExcluded() -> Bool {
+        let excluded = AppState.shared.excludedApps
+        guard !excluded.isEmpty else { return false }
+        return AppExclusionLogic.isExcluded(
+            bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            in: excluded
+        )
     }
 
     /// 右键 / 中键是否也出效果，交给设置决定
@@ -3816,6 +4062,9 @@ final class GlobalMouseMonitor: ObservableObject {
             syncMotion(enabled: false, engine: engine)
             return
         }
+
+        // 排除列表里的 App 不接收聚光环 / 拖尾
+        guard !Self.frontmostIsExcluded() else { return }
 
         let now = Date()
         guard now.timeIntervalSince(lastMotionDispatchTime) >= Self.motionDispatchInterval else { return }
