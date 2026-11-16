@@ -1071,11 +1071,11 @@ nonisolated private func clickBoomHotKeyHandler(
 // MARK: - 应用信息
 enum AppInfo {
     static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.7.0"
     }
 
     static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "20"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "22"
     }
 
     static var version: String {
@@ -1228,10 +1228,17 @@ final class LaunchAtLogin: ObservableObject {
 final class InputPermission: ObservableObject {
     static let shared = InputPermission()
 
-    @Published private(set) var isGranted = CGPreflightListenEventAccess()
+    @Published private(set) var isGranted: Bool
+    private let checkAccess: () -> Bool
+
+    init(checkAccess: @escaping () -> Bool = { CGPreflightListenEventAccess() }) {
+        self.checkAccess = checkAccess
+        isGranted = checkAccess()
+    }
 
     func refresh() {
-        isGranted = CGPreflightListenEventAccess()
+        let granted = checkAccess()
+        if isGranted != granted { isGranted = granted }
     }
 
     func request() {
@@ -1329,15 +1336,16 @@ final class PanelPresenter {
 /// 菜单栏图标：反映开关状态，并在出现时把 openWindow 交给 PanelPresenter。
 struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
-    @ObservedObject private var appState = AppState.shared
+    @ObservedObject private var runtime = RuntimeController.shared
     @ObservedObject private var update = UpdateChecker.shared
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Image(systemName: appState.isPaused ? "pause.circle" : "sparkles")
+            Image(systemName: runtime.status.icon)
                 // 关闭时把图标调暗，一眼能看出当前没生效
-                .opacity(appState.isEnabled ? 1 : 0.35)
-                .accessibilityLabel(Text(appState.isEnabled ? "ClickBoom，已开启" : "ClickBoom，已关闭"))
+                .opacity(runtime.status == .disabled ? 0.35 : 1)
+                .accessibilityLabel(Text("ClickBoom，\(runtime.status.title)"))
+                .help(runtime.status.title)
 
             if update.hasUpdate {
                 Circle()
@@ -1359,7 +1367,6 @@ struct MenuBarQuickPanel: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var appState = AppState.shared
     @StateObject private var loginItem = LaunchAtLogin.shared
-    @StateObject private var permission = InputPermission.shared
     @StateObject private var update = UpdateChecker.shared
     @StateObject private var hotkey = HotKeyManager.shared
     @StateObject private var frontmostAppTracker = FrontmostAppTracker.shared
@@ -1407,19 +1414,7 @@ struct MenuBarQuickPanel: View {
                     .help("开启或关闭点击特效")
             }
 
-            if appState.isPaused {
-                HStack(spacing: 8) {
-                    Image(systemName: "pause.circle.fill")
-                        .foregroundStyle(.orange)
-                    Text("已暂停，\(appState.pauseRemainingText)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("恢复") { appState.resume() }
-                        .buttonStyle(.link)
-                        .font(.system(size: 11))
-                }
-            }
+            RuntimeStatusView()
 
             Divider()
 
@@ -1451,24 +1446,6 @@ struct MenuBarQuickPanel: View {
                 .fixedSize()
 
                 Spacer()
-            }
-
-            if !permission.isGranted {
-                Button {
-                    permission.request()
-                } label: {
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                        Text("缺少「输入监控」权限，点击特效不会触发。点这里开启。")
-                            .font(.system(size: 11))
-                            .multilineTextAlignment(.leading)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-
-                Divider()
             }
 
             Menu {
@@ -1752,6 +1729,7 @@ struct ControlPanelView: View {
     @StateObject private var permission = InputPermission.shared
     @StateObject private var update = UpdateChecker.shared
     @StateObject private var hotkey = HotKeyManager.shared
+    @State private var showDiagnostics = false
     @State private var showResetConfirm = false
     @State private var showSavePreset = false
     @State private var presetName = ""
@@ -2235,22 +2213,10 @@ struct ControlPanelView: View {
                 .padding(.top, 24)
                 .padding(.bottom, 20)
 
-                if appState.isPaused {
-                    HStack(spacing: 8) {
-                        Image(systemName: "pause.circle.fill")
-                            .foregroundColor(.orange)
-                        Text("特效已暂停，\(appState.pauseRemainingText)")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
-                        Spacer()
-                        Button("恢复") { appState.resume() }
-                            .buttonStyle(.link)
-                            .font(.system(size: 11))
-                    }
+                RuntimeStatusView()
                     .padding(.horizontal, 24)
                     .padding(.bottom, 12)
-                }
-                
+
                 // --- 中间滚动区域 ---
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 16) {
@@ -2626,6 +2592,16 @@ struct ControlPanelView: View {
 
                             Divider().background(Color.white.opacity(0.1))
 
+                            Button {
+                                showDiagnostics = true
+                            } label: {
+                                Label("查看运行诊断", systemImage: "info.circle")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+
+                            Divider().background(Color.white.opacity(0.1))
+
                             HStack {
                                 Label("版本", systemImage: "tag")
                                     .font(.system(size: 13, weight: .medium))
@@ -2736,6 +2712,7 @@ struct ControlPanelView: View {
         }
         .colorScheme(.dark)
         .environment(\.locale, Locale(identifier: "zh-Hans"))
+        .sheet(isPresented: $showDiagnostics) { RuntimeDiagnosticsView() }
         .confirmationDialog("恢复默认设置？", isPresented: $showResetConfirm, titleVisibility: .visible) {
             Button("恢复默认", role: .destructive) { appState.resetToDefaults() }
             Button("取消", role: .cancel) {}
@@ -3124,6 +3101,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = icon
         }
 
+        RuntimeController.shared.start()
         layoutOverlay()
         NotificationCenter.default.addObserver(
             self,
@@ -3134,6 +3112,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         openPanelOnFirstLaunchIfNeeded()
         HotKeyManager.shared.sync()
         UpdateChecker.shared.checkIfDue()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        RuntimeController.shared.stop()
     }
 
     /// 第一次安装后主动亮一次面板，免得用户以为没打开；之后启动只留在菜单栏。
@@ -3214,6 +3196,16 @@ class EffectEngine: ObservableObject {
     /// 面板里的「预览」和覆盖层共用同一个引擎
     static let shared = EffectEngine()
 
+    private let state: AppState
+
+    convenience init() {
+        self.init(state: .shared)
+    }
+
+    init(state: AppState) {
+        self.state = state
+    }
+
     /// 全屏连点时的粒子总量上限，超过就丢掉最旧的一批，避免绘制开销拖垮帧率。
     private static let maxParticles = 600
 
@@ -3235,11 +3227,10 @@ class EffectEngine: ObservableObject {
 
     /// 拖尾在屏幕上停留多久：由拖尾自己的「停留时长」决定，与点击效果解耦
     var trailLifetime: TimeInterval {
-        min(2.5, max(0.15, AppState.shared.trailLifetimeMs / 1000.0))
+        min(2.5, max(0.15, state.trailLifetimeMs / 1000.0))
     }
 
     func trigger(at point: CGPoint, button: MouseButtonKind = .left, force: Bool = false) {
-        let state = AppState.shared
         guard force || (state.isEnabled && !state.isPaused) else { return }
 
         pointerPosition = point
@@ -3315,7 +3306,6 @@ class EffectEngine: ObservableObject {
 
     /// 按下鼠标时补一个光点：只点击不移动也能看到反馈，同时结束正在播放的预览动画。
     func beginTrail(at point: CGPoint) {
-        let state = AppState.shared
         guard state.trailEnabled, state.isEnabled, !state.isPaused else { return }
         previewToken &+= 1
 
@@ -3333,7 +3323,6 @@ class EffectEngine: ObservableObject {
 
     /// 鼠标移动（滑动或拖动）时持续记录轨迹点；只要打开拖尾开关就生效
     func extendTrail(at point: CGPoint) {
-        let state = AppState.shared
         guard state.trailEnabled, state.isEnabled, !state.isPaused else { return }
         previewToken &+= 1
 
@@ -3358,7 +3347,7 @@ class EffectEngine: ObservableObject {
 
     /// 面板和菜单栏的「预览」：点击效果照常播放；开了拖尾就额外模拟一段滑动。
     func preview(at point: CGPoint) {
-        if AppState.shared.trailEnabled {
+        if state.trailEnabled {
             previewTrail(at: point)
         }
         trigger(at: point, force: true)
@@ -3366,7 +3355,7 @@ class EffectEngine: ObservableObject {
 
     /// 只播放拖尾动画，不触发点击效果：面板里的「预览拖尾」按钮用
     func previewTrailOnly(at point: CGPoint) {
-        guard AppState.shared.trailEnabled else { return }
+        guard state.trailEnabled else { return }
         previewTrail(at: point)
     }
 
@@ -3376,7 +3365,6 @@ class EffectEngine: ObservableObject {
         trailPoints.removeAll(keepingCapacity: true)
         lastTrailSampleTime = .distantPast
 
-        let state = AppState.shared
         let spread = max(40.0, state.particleRadius * state.scale * 3.2)
         let start = CGPoint(x: point.x - spread, y: point.y + spread * 0.35)
         let end = CGPoint(x: point.x + spread, y: point.y - spread * 0.35)
@@ -3388,14 +3376,28 @@ class EffectEngine: ObservableObject {
             let y = start.y + (end.y - start.y) * t + sin(t * .pi * 1.35) * spread * 0.6
             // 逐点投递，画出一条从左向右划过的弧线，而不是整条同时出现
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.02 + Double(index) * 0.011) { [weak self] in
-                guard let self, self.previewToken == token, AppState.shared.trailEnabled else { return }
+                guard let self, self.previewToken == token, self.state.trailEnabled else { return }
                 self.appendTrailPoint(CGPoint(x: x, y: y), at: Date())
             }
         }
     }
 
+    /// 状态或屏幕切换时同时清理可见元素和待投递预览，避免静默后留下光环或旧轨迹。
+    func clearEffects() {
+        previewToken &+= 1
+        particles.removeAll(keepingCapacity: true)
+        trailPoints.removeAll(keepingCapacity: true)
+        pointerPosition = nil
+        spotlightPulseStart = nil
+        spotlightPulseButton = .left
+        lastTrailSampleTime = .distantPast
+        lastClickTime = .distantPast
+        comboLevel = 0
+        if state.comboCount != 0 { state.comboCount = 0 }
+    }
+
     func cleanUp(currentTime: Date) {
-        let durationSec = AppState.shared.durationMs / 1000.0
+        let durationSec = state.durationMs / 1000.0
         let alive = particles.filter { currentTime.timeIntervalSince($0.startTime) < durationSec }
         // 只有真的清理掉粒子时才重新赋值：否则每帧都会触发一次 @Published 更新。
         if alive.count != particles.count {
@@ -3417,9 +3419,8 @@ class EffectEngine: ObservableObject {
 
 struct EffectOverlayView: View {
     @ObservedObject var engine = EffectEngine.shared
-    @StateObject private var mouseMonitor = GlobalMouseMonitor()
     @ObservedObject var appState = AppState.shared
-    @ObservedObject private var permission = InputPermission.shared
+    @ObservedObject private var runtime = RuntimeController.shared
     @ObservedObject private var accessibility = AccessibilitySettings.shared
 
     var body: some View {
@@ -3436,8 +3437,7 @@ struct EffectOverlayView: View {
                 let scale = appState.scale
 
                 if appState.spotlightEnabled,
-                   appState.isEnabled,
-                   !appState.isPaused,
+                   runtime.status.isRunning,
                    let pointer = engine.pointerPosition {
                     drawSpotlight(at: pointer, now: now, context: ctx)
                 }
@@ -3471,33 +3471,6 @@ struct EffectOverlayView: View {
                 }
             }
             .onChange(of: context.date) { _, newDate in engine.cleanUp(currentTime: newDate) }
-        }
-        .onAppear {
-            mouseMonitor.start(engine: engine)
-            syncMotion()
-        }
-        .onDisappear { mouseMonitor.stop() }
-        .onChange(of: appState.trailEnabled) { _, _ in syncMotion() }
-        .onChange(of: appState.spotlightEnabled) { _, _ in syncMotion() }
-        .onChange(of: appState.isEnabled) { _, _ in syncMotion() }
-        .onChange(of: appState.isPaused) { _, _ in syncMotion() }
-        .onChange(of: permission.isGranted) { _, granted in
-            // 用户在「系统设置」里刚勾上输入监控时，启动阶段注册的监听往往收不到事件，
-            // 重建一次监听即可让权限立刻生效，不必重启 App。
-            if granted {
-                mouseMonitor.restart(engine: engine)
-                syncMotion()
-            }
-        }
-    }
-
-    /// 聚光环和拖尾共用一条鼠标移动监听，两者都关闭时及时释放。
-    private func syncMotion() {
-        let needsMotion = appState.trailEnabled || appState.spotlightEnabled
-        let shouldMonitor = appState.isEnabled && !appState.isPaused && needsMotion
-        mouseMonitor.syncMotion(enabled: shouldMonitor, engine: engine)
-        if shouldMonitor, let point = OverlayGeometry.mousePoint() {
-            engine.updatePointer(at: point, shouldExtendTrail: false)
         }
     }
 
@@ -4322,45 +4295,34 @@ final class GlobalMouseMonitor: ObservableObject {
     private var lastMotionDispatchTime = Date.distantPast
     /// 记录当前是否需要移动监听，权限变化重建时好恢复。
     private var isMotionActive = false
+    private var shouldHandleInput: (() -> Bool)?
 
-    func start(engine: EffectEngine) {
+    var hasMotionMonitor: Bool {
+        motionGlobalMonitor != nil || motionLocalMonitor != nil
+    }
+
+    func start(engine: EffectEngine, shouldHandleInput: @escaping () -> Bool) {
+        self.shouldHandleInput = shouldHandleInput
         guard globalMonitor == nil, localMonitor == nil else { return }
 
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
 
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak engine] event in
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self, weak engine] event in
             guard Self.supports(event) else { return }
             let button = Self.buttonKind(for: event)
             DispatchQueue.main.async {
-                guard !Self.frontmostIsSilenced() else { return }
+                guard self?.shouldHandleInput?() == true else { return }
                 guard let point = OverlayGeometry.mousePoint() else { return }
                 engine?.trigger(at: point, button: button)
             }
         }
 
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak engine] event in
-            if Self.supports(event), !Self.frontmostIsSilenced(), let point = OverlayGeometry.mousePoint() {
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self, weak engine] event in
+            if Self.supports(event), self?.shouldHandleInput?() == true, let point = OverlayGeometry.mousePoint() {
                 engine?.trigger(at: point, button: Self.buttonKind(for: event))
             }
             return event
         }
-    }
-
-    /// 是否静默：前台 App 在排除列表里，或「全屏自动静默」打开且前台 App 全屏。
-    private static func frontmostIsSilenced() -> Bool {
-        if frontmostIsExcluded() { return true }
-        guard AppState.shared.autoSilenceInFullScreen else { return false }
-        return FullScreenDetector.shared.isFrontmostAppFullScreen()
-    }
-
-    /// 当前前台 App 是否在排除列表里；命中时不出点击特效，也不延长拖尾
-    private static func frontmostIsExcluded() -> Bool {
-        let excluded = AppState.shared.excludedApps
-        guard !excluded.isEmpty else { return false }
-        return AppExclusionLogic.isExcluded(
-            bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-            in: excluded
-        )
     }
 
     /// 右键 / 中键是否也出效果，交给设置决定
@@ -4430,12 +4392,10 @@ final class GlobalMouseMonitor: ObservableObject {
             return
         }
 
-        // 排除列表里的 App 不接收聚光环 / 拖尾
-        guard !Self.frontmostIsSilenced() else { return }
-
         let now = Date()
         guard now.timeIntervalSince(lastMotionDispatchTime) >= Self.motionDispatchInterval else { return }
         lastMotionDispatchTime = now
+        guard shouldHandleInput?() == true else { return }
 
         guard let point = OverlayGeometry.mousePoint() else { return }
         engine.updatePointer(
@@ -4480,13 +4440,16 @@ final class GlobalMouseMonitor: ObservableObject {
         }
         stopMotion()
         isMotionActive = false
+        shouldHandleInput = nil
     }
 
     /// 输入监控权限变化后重建监听：早期注册的监听不会随权限自动开始投递事件。
     func restart(engine: EffectEngine) {
         let motionWasActive = isMotionActive
+        let handler = shouldHandleInput
         stop()
-        start(engine: engine)
+        guard let handler else { return }
+        start(engine: engine, shouldHandleInput: handler)
         if motionWasActive {
             syncMotion(enabled: true, engine: engine)
         }

@@ -47,29 +47,62 @@ final class FullScreenDetector {
     private let cacheInterval: TimeInterval = 0.5
     private var cachedResult = false
     private var cachedAt = Date.distantPast
+    private var cachedPID: pid_t?
+    private var cachedScreens: [CGRect] = []
+    private let query: (pid_t, [CGRect]) -> Bool
+    private let now: () -> Date
 
-    func isFrontmostAppFullScreen(forceRefresh: Bool = false) -> Bool {
-        let now = Date()
-        if !forceRefresh, now.timeIntervalSince(cachedAt) < cacheInterval {
+    convenience init() {
+        self.init(query: FullScreenDetector.queryFullScreen)
+    }
+
+    init(
+        query: @escaping (pid_t, [CGRect]) -> Bool,
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.query = query
+        self.now = now
+    }
+
+    func invalidate() {
+        cachedAt = .distantPast
+        cachedPID = nil
+    }
+
+    func isAppFullScreen(_ app: NSRunningApplication?, forceRefresh: Bool = false) -> Bool {
+        isFullScreen(
+            processID: app?.isTerminated == false ? app?.processIdentifier : nil,
+            screenFrames: NSScreen.screens.map(\.frame),
+            forceRefresh: forceRefresh
+        )
+    }
+
+    func isFullScreen(processID: pid_t?, screenFrames: [CGRect], forceRefresh: Bool = false) -> Bool {
+        guard let processID, !screenFrames.isEmpty else {
+            invalidate()
+            return false
+        }
+        let date = now()
+        if !forceRefresh, cachedPID == processID, cachedScreens == screenFrames,
+           date.timeIntervalSince(cachedAt) >= 0,
+           date.timeIntervalSince(cachedAt) < cacheInterval {
             return cachedResult
         }
-        cachedAt = now
-        cachedResult = queryFrontmostAppFullScreen()
+        cachedAt = date
+        cachedPID = processID
+        cachedScreens = screenFrames
+        cachedResult = query(processID, screenFrames)
         return cachedResult
     }
 
-    private func queryFrontmostAppFullScreen() -> Bool {
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              let primaryHeight = NSScreen.screens.first?.frame.height,
+    private static func queryFullScreen(pid: pid_t, screenFrames: [CGRect]) -> Bool {
+        guard let primaryHeight = screenFrames.first?.height,
               let windows = CGWindowListCopyWindowInfo(
                   [.optionOnScreenOnly, .excludeDesktopElements],
                   kCGNullWindowID
               ) as? [[String: Any]] else {
             return false
         }
-
-        let screenFrames = NSScreen.screens.map(\.frame)
-        let pid = app.processIdentifier
 
         for info in windows {
             guard let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,

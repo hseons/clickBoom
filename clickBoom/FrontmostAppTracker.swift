@@ -11,6 +11,8 @@ final class FrontmostAppTracker: ObservableObject {
 
     @Published private(set) var lastActiveApp: ExcludedApp?
 
+    private(set) var lastActiveApplication: NSRunningApplication?
+
     private var observer: NSObjectProtocol?
 
     private init() {
@@ -40,11 +42,14 @@ final class FrontmostAppTracker: ObservableObject {
     }
 
     private func remember(_ app: NSRunningApplication) {
+        guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        lastActiveApplication = app
         guard let bundleID = app.bundleIdentifier,
               bundleID != Bundle.main.bundleIdentifier,
               !app.isTerminated else {
             return
         }
-        lastActiveApp = ExcludedApp(bundleID: bundleID, name: app.localizedName ?? bundleID)
+        let remembered = ExcludedApp(bundleID: bundleID, name: app.localizedName ?? bundleID)
+        if lastActiveApp != remembered { lastActiveApp = remembered }
     }
 }
