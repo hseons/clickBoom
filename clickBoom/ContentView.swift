@@ -256,6 +256,9 @@ struct PresetSnapshot: Codable, Identifiable, Equatable {
     var distinguishMouseButtons: Bool? = nil
     var rightClickColorHex: String? = nil
     var middleClickColorHex: String? = nil
+    // 1.6 管理元数据保持可选，继续兼容 schema v1。
+    var isFavorite: Bool? = nil
+    var lastUsedAt: Date? = nil
 }
 
 struct PresetArchive: Codable {
@@ -330,9 +333,10 @@ class AppState: NSObject, ObservableObject {
         static let excludedApps = "excludedApps"
         static let autoSilenceInFullScreen = "autoSilenceInFullScreen"
         static let savedPresets = "savedPresets"
+        static let presetImportRecovery = "presetImportRecovery"
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     @Published var isEnabled: Bool = true {
         didSet { defaults.set(isEnabled, forKey: Key.isEnabled) }
@@ -445,6 +449,8 @@ class AppState: NSObject, ObservableObject {
         }
     }
 
+    @Published private var presetImportRecovery: PresetImportRecovery?
+
     @Published var comboCount: Int = 0
 
     /// 暂停状态的剩余时间；由暂停计时器刷新，用来驱动菜单栏和面板上的倒计时
@@ -452,10 +458,15 @@ class AppState: NSObject, ObservableObject {
     @Published private(set) var pauseRemaining: TimeInterval = 0
     private var pauseTimer: Timer?
 
-    override init() {
+    override convenience init() {
+        self.init(defaults: .standard)
+    }
+
+    init(defaults: UserDefaults) {
+        self.defaults = defaults
         super.init()
 
-        let d = UserDefaults.standard
+        let d = defaults
 
         if let value = d.object(forKey: Key.isEnabled) as? Bool { isEnabled = value }
         if let value = d.string(forKey: Key.effectColorHex) { effectColorHex = value }
@@ -507,6 +518,9 @@ class AppState: NSObject, ObservableObject {
         if let data = d.data(forKey: Key.savedPresets),
            let decoded = try? JSONDecoder().decode([PresetSnapshot].self, from: data) {
             savedPresets = decoded
+        }
+        if let data = d.data(forKey: Key.presetImportRecovery) {
+            presetImportRecovery = try? JSONDecoder().decode(PresetImportRecovery.self, from: data)
         }
     }
 
@@ -664,6 +678,9 @@ class AppState: NSObject, ObservableObject {
     }
 
     func apply(_ preset: PresetSnapshot) {
+        if let index = savedPresets.firstIndex(where: { $0.id == preset.id }) {
+            savedPresets[index].lastUsedAt = Date()
+        }
         if EffectStyle(rawValue: preset.effect) != nil {
             effectStyleRaw = preset.effect
         }
@@ -770,7 +787,7 @@ class AppState: NSObject, ObservableObject {
     func saveCurrentPreset(named rawName: String) -> String {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = name.isEmpty ? "我的预设 \(savedPresets.count + 1)" : name
-        let snapshot = PresetSnapshot(
+        var snapshot = PresetSnapshot(
             name: finalName,
             effect: effectStyleRaw,
             colorHex: effectColorHex,
@@ -797,6 +814,9 @@ class AppState: NSObject, ObservableObject {
             middleClickColorHex: middleClickColorHex
         )
         if let index = savedPresets.firstIndex(where: { $0.name == finalName }) {
+            snapshot.id = savedPresets[index].id
+            snapshot.isFavorite = savedPresets[index].isFavorite
+            snapshot.lastUsedAt = savedPresets[index].lastUsedAt
             savedPresets[index] = snapshot
         } else {
             savedPresets.append(snapshot)
@@ -818,8 +838,44 @@ class AppState: NSObject, ObservableObject {
             try PresetArchiveCodec.decode(data),
             into: savedPresets
         )
+        let recovery = PresetImportRecovery(previous: savedPresets, imported: result.presets)
+        let recoveryData = try JSONEncoder().encode(recovery)
+        defaults.set(recoveryData, forKey: Key.presetImportRecovery)
+        presetImportRecovery = recovery
         savedPresets = result.presets
         return result.summary
+    }
+
+    var quickAccessPresets: [PresetSnapshot] {
+        PresetLibraryLogic.quickAccess(savedPresets)
+    }
+
+    func renamePreset(_ id: UUID, to name: String) {
+        savedPresets = PresetLibraryLogic.renamed(savedPresets, id: id, name: name)
+    }
+
+    func duplicatePreset(_ id: UUID) {
+        savedPresets = PresetLibraryLogic.duplicating(savedPresets, id: id)
+    }
+
+    func togglePresetFavorite(_ id: UUID) {
+        guard let index = savedPresets.firstIndex(where: { $0.id == id }) else { return }
+        savedPresets[index].isFavorite = savedPresets[index].isFavorite != true
+    }
+
+    func movePreset(_ id: UUID, before targetID: UUID) {
+        savedPresets = PresetLibraryLogic.moving(savedPresets, id: id, before: targetID)
+    }
+
+    var canUndoPresetImport: Bool {
+        presetImportRecovery?.canRestore(over: savedPresets) == true
+    }
+
+    func undoPresetImport() {
+        guard let recovery = presetImportRecovery, recovery.canRestore(over: savedPresets) else { return }
+        savedPresets = recovery.previous
+        presetImportRecovery = nil
+        defaults.removeObject(forKey: Key.presetImportRecovery)
     }
 
     /// 加入应用排除列表；返回是否真的加入了（自己或重复项会被忽略）。
@@ -1444,15 +1500,17 @@ struct MenuBarQuickPanel: View {
 
             if !appState.savedPresets.isEmpty {
                 Menu {
-                    ForEach(appState.savedPresets) { preset in
+                    ForEach(appState.quickAccessPresets) { preset in
                         Button {
                             appState.apply(preset)
                         } label: {
-                            Text(preset.name)
+                            Label(preset.name, systemImage: preset.isFavorite == true ? "star.fill" : "clock")
                         }
                     }
+                    Divider()
+                    Button("管理全部预设…") { PanelPresenter.shared.show() }
                 } label: {
-                    Label("我的预设", systemImage: "bookmark.fill")
+                    Label("收藏与最近", systemImage: "bookmark.fill")
                 }
             }
 
@@ -1698,6 +1756,12 @@ struct ControlPanelView: View {
     @State private var showSavePreset = false
     @State private var presetName = ""
     @State private var presetTransferMessage: String?
+    @State private var presetSearchText = ""
+    @State private var favoritePresetsOnly = false
+    @State private var renamingPreset: PresetSnapshot?
+    @State private var renamedPresetName = ""
+    @State private var pendingPresetImport: Data?
+    @State private var presetImportPreview = ""
     @State private var selectableApps: [ExcludedApp] = []
     @State private var exclusionSearchText = ""
     @State private var settingsBackupMessage: String?
@@ -1768,8 +1832,13 @@ struct ControlPanelView: View {
             }
             do {
                 let data = try Data(contentsOf: url)
-                let summary = try appState.importPresetArchive(from: data)
-                presetTransferMessage = "导入完成：新增 \(summary.added) 个，更新 \(summary.updated) 个，同名改名 \(summary.renamed) 个。"
+                let incoming = try PresetArchiveCodec.decode(data)
+                let summary = PresetArchiveCodec.merge(incoming, into: appState.savedPresets).summary
+                presetImportPreview = "新增 \(summary.added) 个，更新 \(summary.updated) 个，同名改名 \(summary.renamed) 个。\n导入前自动备份现有预设，之后可撤销。"
+                if incoming.count > PresetArchiveCodec.maxPresetsPerImport {
+                    presetImportPreview += "\n本文件有 \(incoming.count) 个预设，本次仅导入前 \(PresetArchiveCodec.maxPresetsPerImport) 个。"
+                }
+                pendingPresetImport = data
             } catch {
                 presetTransferMessage = "导入失败：\(error.localizedDescription)"
             }
@@ -1893,6 +1962,223 @@ struct ControlPanelView: View {
         endPoint: .bottomTrailing
     )
     
+    private var trailSection: some View {
+        SectionCard(icon: "scribble.variable", title: "拖尾") {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                Text("滑动拖尾")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.white.opacity(0.8))
+                Toggle("", isOn: $appState.trailEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(.teal)
+                Spacer(minLength: 0)
+            }
+            Text("移动鼠标时留下渐隐光带，可与任意点击效果同时开启")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.45))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+
+            if appState.trailEnabled {
+                Picker("触发方式", selection: $appState.trailTriggerModeRaw) {
+                    ForEach(TrailTriggerMode.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                HStack {
+                    Text("拖尾样式")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.6))
+                    Spacer()
+                    Button {
+                        previewTrail()
+                    } label: {
+                        Label("预览", systemImage: "play.circle")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.teal)
+                    .help("在当前鼠标位置播放一段拖尾")
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(TrailStyle.allCases) { style in
+                        Button {
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                appState.trailStyleRaw = style.rawValue
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: style.icon)
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(style.title)
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(appState.trailStyleRaw == style.rawValue ? Color.teal.opacity(0.26) : Color.white.opacity(0.06))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(appState.trailStyleRaw == style.rawValue ? Color.teal.opacity(0.65) : Color.white.opacity(0.08), lineWidth: 1)
+                            )
+                            .foregroundColor(appState.trailStyleRaw == style.rawValue ? .white : .white.opacity(0.65))
+                        }
+                        .buttonStyle(.plain)
+                        .help(style.subtitle)
+                    }
+                }
+
+                Divider().background(Color.white.opacity(0.1))
+
+                Toggle("跟随点击颜色", isOn: $appState.trailFollowsColor)
+                    .toggleStyle(.switch)
+                    .tint(.teal)
+                Text("关闭后可给拖尾单独选颜色")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.45))
+
+                if !appState.trailFollowsColor {
+                    HStack {
+                        Text("拖尾颜色")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                        Spacer()
+                        ColorPicker("", selection: appState.trailColorBinding)
+                            .labelsHidden()
+                    }
+                }
+
+                ModernSlider(label: "粗细", value: $appState.trailWidth, range: 2...30, icon: "lineweight", format: "%.0f")
+                ModernSlider(label: "透明度", value: Binding(get: { appState.trailOpacity * 100 }, set: { appState.trailOpacity = $0 / 100 }), range: 20...100, icon: "circle.lefthalf.filled", format: "%.0f%%")
+                ModernSlider(label: "停留", value: $appState.trailLifetimeMs, range: 200...2000, icon: "hourglass", format: "%.0f 毫秒")
+            }
+        }
+    }
+
+    private var presetsSection: some View {
+        SectionCard(icon: "slider.horizontal.3", title: "预设") {
+            HStack {
+                Text("演示场景")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white.opacity(0.45))
+                Spacer()
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(ScenePreset.allCases) { scene in
+                    Button {
+                        appState.apply(scene)
+                    } label: {
+                        Label(scene.title, systemImage: scene.icon)
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+
+            Divider().background(Color.white.opacity(0.1))
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(EffectPreset.allCases) { preset in
+                    PresetButton(preset: preset) {
+                        appState.apply(preset)
+                    }
+                }
+            }
+
+            Divider().background(Color.white.opacity(0.1))
+
+            HStack {
+                Text("我的预设")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white.opacity(0.45))
+                Spacer()
+                Menu {
+                    Button(action: importPresets) {
+                        Label("导入预设…", systemImage: "square.and.arrow.down")
+                    }
+                    Button(action: exportPresets) {
+                        Label("导出预设…", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(appState.savedPresets.isEmpty)
+                    Button("撤销上次导入") { appState.undoPresetImport() }
+                        .disabled(!appState.canUndoPresetImport)
+                } label: {
+                    Label("导入 / 导出", systemImage: "arrow.up.arrow.down")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Button {
+                    presetName = ""
+                    showSavePreset = true
+                } label: {
+                    Label("保存当前", systemImage: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            if appState.savedPresets.isEmpty {
+                Text("调好参数后点「保存当前」，就能把自己的搭配固定下来。")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                PresetLibraryView(
+                    appState: appState,
+                    searchText: $presetSearchText,
+                    favoritesOnly: $favoritePresetsOnly
+                ) { preset in
+                    renamedPresetName = preset.name
+                    renamingPreset = preset
+                }
+            }
+        }
+        .alert("重命名预设", isPresented: Binding(
+            get: { renamingPreset != nil },
+            set: { if !$0 { renamingPreset = nil } }
+        ), presenting: renamingPreset) { preset in
+            TextField("预设名称", text: $renamedPresetName)
+            Button("保存") {
+                appState.renamePreset(preset.id, to: renamedPresetName)
+                renamingPreset = nil
+            }
+            .disabled(renamedPresetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("取消", role: .cancel) { renamingPreset = nil }
+        } message: { _ in
+            Text("名称重复时自动保留为独立名称。")
+        }
+        .alert("确认导入预设？", isPresented: Binding(
+            get: { pendingPresetImport != nil },
+            set: { if !$0 { pendingPresetImport = nil } }
+        ), presenting: pendingPresetImport) { data in
+            Button("导入") {
+                pendingPresetImport = nil
+                do {
+                    let summary = try appState.importPresetArchive(from: data)
+                    presetTransferMessage = "导入完成：新增 \(summary.added) 个，更新 \(summary.updated) 个，同名改名 \(summary.renamed) 个。可在「导入 / 导出」中撤销。"
+                } catch {
+                    presetTransferMessage = "导入失败：\(error.localizedDescription)"
+                }
+            }
+            Button("取消", role: .cancel) { pendingPresetImport = nil }
+        } message: { _ in
+            Text(presetImportPreview)
+        }
+    }
+
     var body: some View {
         ZStack {
             // 背景层
@@ -2046,89 +2332,8 @@ struct ControlPanelView: View {
                             }
                         }
 
-                        SectionCard(icon: "slider.horizontal.3", title: "预设") {
-                            HStack {
-                                Text("演示场景")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.45))
-                                Spacer()
-                            }
+                        presetsSection
 
-                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                                ForEach(ScenePreset.allCases) { scene in
-                                    Button {
-                                        appState.apply(scene)
-                                    } label: {
-                                        Label(scene.title, systemImage: scene.icon)
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 7)
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                }
-                            }
-
-                            Divider().background(Color.white.opacity(0.1))
-
-                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                                ForEach(EffectPreset.allCases) { preset in
-                                    PresetButton(preset: preset) {
-                                        appState.apply(preset)
-                                    }
-                                }
-                            }
-
-                            Divider().background(Color.white.opacity(0.1))
-
-                            HStack {
-                                Text("我的预设")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.45))
-                                Spacer()
-                                Menu {
-                                    Button(action: importPresets) {
-                                        Label("导入预设…", systemImage: "square.and.arrow.down")
-                                    }
-                                    Button(action: exportPresets) {
-                                        Label("导出预设…", systemImage: "square.and.arrow.up")
-                                    }
-                                    .disabled(appState.savedPresets.isEmpty)
-                                } label: {
-                                    Label("导入 / 导出", systemImage: "arrow.up.arrow.down")
-                                        .font(.system(size: 11, weight: .semibold))
-                                }
-                                .menuStyle(.borderlessButton)
-                                .fixedSize()
-                                Button {
-                                    presetName = ""
-                                    showSavePreset = true
-                                } label: {
-                                    Label("保存当前", systemImage: "plus")
-                                        .font(.system(size: 11, weight: .semibold))
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-
-                            if appState.savedPresets.isEmpty {
-                                Text("调好参数后点「保存当前」，就能把自己的搭配固定下来。")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.4))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            } else {
-                                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                                    ForEach(appState.savedPresets) { preset in
-                                        SavedPresetChip(preset: preset) {
-                                            appState.apply(preset)
-                                        } onDelete: {
-                                            appState.deletePreset(preset)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
                         // 粒子属性卡片
                         SectionCard(icon: "sparkles", title: "粒子") {
                             ModernSlider(label: "数量", value: Binding(get: { Double(appState.particleCount) }, set: { appState.particleCount = Int($0) }), range: 3...20, icon: "burst.fill", format: "%.0f")
@@ -2191,103 +2396,7 @@ struct ControlPanelView: View {
                             }
                         }
 
-                        SectionCard(icon: "scribble.variable", title: "拖尾") {
-                            HStack(spacing: 8) {
-                                Spacer(minLength: 0)
-                                Text("滑动拖尾")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.8))
-                                Toggle("", isOn: $appState.trailEnabled)
-                                    .labelsHidden()
-                                    .toggleStyle(.switch)
-                                    .tint(.teal)
-                                Spacer(minLength: 0)
-                            }
-                            Text("移动鼠标时留下渐隐光带，可与任意点击效果同时开启")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.45))
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: .infinity)
-
-                            if appState.trailEnabled {
-                                Picker("触发方式", selection: $appState.trailTriggerModeRaw) {
-                                    ForEach(TrailTriggerMode.allCases) { mode in
-                                        Text(mode.title).tag(mode.rawValue)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-
-                                HStack {
-                                    Text("拖尾样式")
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundColor(.white.opacity(0.6))
-                                    Spacer()
-                                    Button {
-                                        previewTrail()
-                                    } label: {
-                                        Label("预览", systemImage: "play.circle")
-                                            .font(.system(size: 11, weight: .medium))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundColor(.teal)
-                                    .help("在当前鼠标位置播放一段拖尾")
-                                }
-
-                                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                                    ForEach(TrailStyle.allCases) { style in
-                                        Button {
-                                            withAnimation(.easeOut(duration: 0.12)) {
-                                                appState.trailStyleRaw = style.rawValue
-                                            }
-                                        } label: {
-                                            HStack(spacing: 5) {
-                                                Image(systemName: style.icon)
-                                                    .font(.system(size: 11, weight: .semibold))
-                                                Text(style.title)
-                                                    .font(.system(size: 11, weight: .medium))
-                                            }
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 7)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                    .fill(appState.trailStyleRaw == style.rawValue ? Color.teal.opacity(0.26) : Color.white.opacity(0.06))
-                                            )
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                    .stroke(appState.trailStyleRaw == style.rawValue ? Color.teal.opacity(0.65) : Color.white.opacity(0.08), lineWidth: 1)
-                                            )
-                                            .foregroundColor(appState.trailStyleRaw == style.rawValue ? .white : .white.opacity(0.65))
-                                        }
-                                        .buttonStyle(.plain)
-                                        .help(style.subtitle)
-                                    }
-                                }
-
-                                Divider().background(Color.white.opacity(0.1))
-
-                                Toggle("跟随点击颜色", isOn: $appState.trailFollowsColor)
-                                    .toggleStyle(.switch)
-                                    .tint(.teal)
-                                Text("关闭后可给拖尾单独选颜色")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.45))
-
-                                if !appState.trailFollowsColor {
-                                    HStack {
-                                        Text("拖尾颜色")
-                                            .font(.system(size: 13, weight: .medium))
-                                            .foregroundColor(.white.opacity(0.8))
-                                        Spacer()
-                                        ColorPicker("", selection: appState.trailColorBinding)
-                                            .labelsHidden()
-                                    }
-                                }
-
-                                ModernSlider(label: "粗细", value: $appState.trailWidth, range: 2...30, icon: "lineweight", format: "%.0f")
-                                ModernSlider(label: "透明度", value: Binding(get: { appState.trailOpacity * 100 }, set: { appState.trailOpacity = $0 / 100 }), range: 20...100, icon: "circle.lefthalf.filled", format: "%.0f%%")
-                                ModernSlider(label: "停留", value: $appState.trailLifetimeMs, range: 200...2000, icon: "hourglass", format: "%.0f 毫秒")
-                            }
-                        }
+                        trailSection
 
                         SectionCard(icon: "gearshape", title: "选项") {
                             Toggle("随机样式", isOn: $appState.randomEffectEnabled)
@@ -2849,12 +2958,19 @@ struct SavedPresetChip: View {
     let preset: PresetSnapshot
     let onApply: () -> Void
     let onDelete: () -> Void
+    let onRename: () -> Void
+    let onDuplicate: () -> Void
+    let onFavorite: () -> Void
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
+    let canMoveUp: Bool
+    let canMoveDown: Bool
 
     var body: some View {
         HStack(spacing: 4) {
             Button(action: onApply) {
                 HStack(spacing: 6) {
-                    Image(systemName: "bookmark.fill")
+                    Image(systemName: preset.isFavorite == true ? "star.fill" : "bookmark.fill")
                         .font(.system(size: 10))
                     Text(preset.name)
                         .font(.system(size: 11, weight: .medium))
@@ -2864,6 +2980,7 @@ struct SavedPresetChip: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(preset.name)
 
             Button(action: onDelete) {
                 Image(systemName: "xmark")
@@ -2881,6 +2998,13 @@ struct SavedPresetChip: View {
         .background(Color.white.opacity(0.07))
         .cornerRadius(8)
         .contextMenu {
+            Button(preset.isFavorite == true ? "取消收藏" : "收藏", action: onFavorite)
+            Button("重命名…", action: onRename)
+            Button("复制预设", action: onDuplicate)
+            Divider()
+            Button("上移", action: onMoveUp).disabled(!canMoveUp)
+            Button("下移", action: onMoveDown).disabled(!canMoveDown)
+            Divider()
             Button("删除预设", role: .destructive, action: onDelete)
         }
     }
