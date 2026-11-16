@@ -225,6 +225,7 @@ scripts/release.sh          # 打包 DMG（通用二进制，可选签名/公证
 ## 🗒️ 更新日志
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)，这里只保留最近两个版本。
+后续版本建议、启动条件和验收范围见 [ROADMAP.md](ROADMAP.md)。
 
 ### 1.6.0
 
