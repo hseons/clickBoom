@@ -21,6 +21,39 @@ enum FullScreenLogic {
         screenFrames.contains { isCoveringScreen(windowFrame: windowFrame, screenFrame: $0) }
     }
 
+    /// 系统全屏有时由标题栏、工具栏和内容窗拼成；只合并横跨整屏且纵向连续的窗口段，
+    /// 避免把并排的普通半屏窗口误判成全屏。
+    nonisolated static func isCoveredByWindowSegments(
+        windowFrames: [CGRect],
+        screenFrames: [CGRect]
+    ) -> Bool {
+        screenFrames.contains { screenFrame in
+            let segments = windowFrames.compactMap { windowFrame -> CGRect? in
+                guard windowFrame.minX <= screenFrame.minX + tolerance,
+                      windowFrame.maxX >= screenFrame.maxX - tolerance else {
+                    return nil
+                }
+                let minY = max(windowFrame.minY, screenFrame.minY)
+                let maxY = min(windowFrame.maxY, screenFrame.maxY)
+                guard maxY > minY else { return nil }
+                return CGRect(
+                    x: screenFrame.minX,
+                    y: minY,
+                    width: screenFrame.width,
+                    height: maxY - minY
+                )
+            }.sorted { $0.minY < $1.minY }
+
+            var coveredUntil = screenFrame.minY - tolerance
+            for segment in segments {
+                guard segment.minY <= coveredUntil + tolerance else { break }
+                coveredUntil = max(coveredUntil, segment.maxY)
+                if coveredUntil >= screenFrame.maxY - tolerance { return true }
+            }
+            return false
+        }
+    }
+
     /// CGWindowList 的 bounds 以主屏左上角为原点（y 向下），
     /// NSScreen.frame 以主屏左下角为原点（y 向上），这里做一次翻转。
     nonisolated static func appKitFrame(
@@ -104,6 +137,7 @@ final class FullScreenDetector {
             return false
         }
 
+        var appKitFrames: [CGRect] = []
         for info in windows {
             guard let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
                   ownerPID == pid,
@@ -122,10 +156,11 @@ final class FullScreenDetector {
                 fromCGWindowBounds: cgFrame,
                 primaryScreenHeight: primaryHeight
             )
-            if FullScreenLogic.isCoveringAnyScreen(windowFrame: appKitFrame, screenFrames: screenFrames) {
-                return true
-            }
+            appKitFrames.append(appKitFrame)
         }
-        return false
+        return FullScreenLogic.isCoveredByWindowSegments(
+            windowFrames: appKitFrames,
+            screenFrames: screenFrames
+        )
     }
 }

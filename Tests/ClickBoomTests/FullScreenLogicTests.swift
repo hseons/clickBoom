@@ -34,6 +34,40 @@ final class FullScreenLogicTests: XCTestCase {
         )
     }
 
+    func testAdjacentFullWidthWindowSegmentsCoverScreen() {
+        let content = CGRect(x: 0, y: 0, width: 1512, height: 882)
+        let toolbar = CGRect(x: 0, y: 882, width: 1512, height: 60)
+        let titlebar = CGRect(x: 0, y: 942, width: 1512, height: 40)
+        XCTAssertTrue(
+            FullScreenLogic.isCoveredByWindowSegments(
+                windowFrames: [content, toolbar, titlebar],
+                screenFrames: [screen]
+            )
+        )
+    }
+
+    func testWindowSegmentsWithVerticalGapDoNotCoverScreen() {
+        let content = CGRect(x: 0, y: 0, width: 1512, height: 882)
+        let toolbar = CGRect(x: 0, y: 892, width: 1512, height: 90)
+        XCTAssertFalse(
+            FullScreenLogic.isCoveredByWindowSegments(
+                windowFrames: [content, toolbar],
+                screenFrames: [screen]
+            )
+        )
+    }
+
+    func testSideBySideWindowsDoNotCoverScreen() {
+        let left = CGRect(x: 0, y: 0, width: 756, height: 982)
+        let right = CGRect(x: 756, y: 0, width: 756, height: 982)
+        XCTAssertFalse(
+            FullScreenLogic.isCoveredByWindowSegments(
+                windowFrames: [left, right],
+                screenFrames: [screen]
+            )
+        )
+    }
+
     func testCGWindowBoundsAreFlippedToAppKitCoordinates() {
         // 主屏高 982：CG 里 y=0 的窗口在 AppKit 中顶到 982，y=25 时下移 25
         let top = FullScreenLogic.appKitFrame(

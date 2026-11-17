@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import XCTest
 @testable import ClickBoom
@@ -183,6 +184,45 @@ final class RuntimeControllerTests: XCTestCase {
         RunLoop.main.perform { drained.fulfill() }
         await fulfillment(of: [drained], timeout: 2)
         XCTAssertEqual(reads, stoppedReads)
+    }
+
+    @MainActor
+    func testWakeNotificationRefreshesWithoutResumingPause() async {
+        let suite = "ClickBoomTests.Runtime.Wake.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let state = AppState(defaults: defaults)
+        state.autoSilenceInFullScreen = false
+        let permission = InputPermission(checkAccess: { true })
+        let engine = EffectEngine(state: state)
+        var reads = 0
+        let runtime = RuntimeController(
+            state: state,
+            permission: permission,
+            engine: engine,
+            monitor: nil,
+            context: { _ in
+                reads += 1
+                return RuntimeContext(app: nil, isFullScreen: false, screenCount: 1)
+            },
+            pointer: { .zero }
+        )
+        defer { runtime.stop(); state.resume() }
+
+        runtime.start()
+        state.pause(minutes: 15)
+        runtime.refresh()
+        XCTAssertEqual(runtime.status, .paused)
+        let readsBeforeWake = reads
+
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+
+        let drained = expectation(description: "唤醒通知已处理")
+        RunLoop.main.perform { drained.fulfill() }
+        await fulfillment(of: [drained], timeout: 2)
+
+        XCTAssertGreaterThan(reads, readsBeforeWake)
+        XCTAssertEqual(runtime.status, .paused)
     }
 
     @MainActor
