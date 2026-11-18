@@ -78,7 +78,7 @@ final class RuntimeController: ObservableObject {
         guard !started else { return }
         started = true
         hadPermission = permission.isGranted
-        monitor?.start(engine: engine) { [weak self] in
+        monitor?.start { [weak self] in
             guard let self else { return false }
             self.refresh()
             return self.status.isRunning
@@ -90,6 +90,8 @@ final class RuntimeController: ObservableObject {
             state.$pauseUntil.map { _ in () }.eraseToAnyPublisher(),
             state.$excludedApps.map { _ in () }.eraseToAnyPublisher(),
             state.$autoSilenceInFullScreen.map { _ in () }.eraseToAnyPublisher(),
+            state.$clickTriggerMode.map { _ in () }.eraseToAnyPublisher(),
+            state.$rightClickEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$trailEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$spotlightEnabled.map { _ in () }.eraseToAnyPublisher(),
             permission.$isGranted.map { _ in () }.eraseToAnyPublisher()
@@ -145,14 +147,17 @@ final class RuntimeController: ObservableObject {
         let targetChanged = targetApp != snapshot.app
         if targetChanged { targetApp = snapshot.app }
         if resetEffects || targetChanged || (changed && !next.isRunning) {
+            monitor?.cancelPendingClicks()
             engine.clearEffects()
         }
         if changed { status = next }
 
         if permission.isGranted != hadPermission {
             hadPermission = permission.isGranted
-            if hadPermission { monitor?.restart(engine: engine) }
+            if hadPermission { monitor?.resetMonitors() }
         }
+        monitor?.syncClicks(mode: state.clickTriggerMode, rightClickEnabled: state.rightClickEnabled,
+                            isRunning: next.isRunning, engine: engine)
         let needsMotion = next.isRunning && (state.trailEnabled || state.spotlightEnabled)
         let wasMonitoring = monitor?.hasMotionMonitor == true
         monitor?.syncMotion(enabled: needsMotion, engine: engine)

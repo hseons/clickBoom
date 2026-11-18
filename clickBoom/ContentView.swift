@@ -327,6 +327,7 @@ class AppState: NSObject, ObservableObject {
         static let middleClickColorHex = "middleClickColorHex"
         static let comboBoostEnabled = "comboBoostEnabled"
         static let customEmoji = "customEmoji"
+        static let clickTriggerMode = "clickTriggerMode"
         static let rightClickEnabled = "rightClickEnabled"
         static let hotkeyEnabled = "hotkeyEnabled"
         static let hotKeySpec = "hotKeySpec"
@@ -421,6 +422,9 @@ class AppState: NSObject, ObservableObject {
     @Published var customEmoji: String = "✨" {
         didSet { defaults.set(customEmoji, forKey: Key.customEmoji) }
     }
+    @Published var clickTriggerMode: ClickTriggerMode = .singleClick {
+        didSet { defaults.set(clickTriggerMode.rawValue, forKey: Key.clickTriggerMode) }
+    }
     @Published var rightClickEnabled: Bool = true {
         didSet { defaults.set(rightClickEnabled, forKey: Key.rightClickEnabled) }
     }
@@ -503,6 +507,9 @@ class AppState: NSObject, ObservableObject {
         if let value = d.string(forKey: Key.middleClickColorHex) { middleClickColorHex = value }
         if let value = d.object(forKey: Key.comboBoostEnabled) as? Bool { comboBoostEnabled = value }
         if let value = d.string(forKey: Key.customEmoji) { customEmoji = value }
+        if let rawValue = d.string(forKey: Key.clickTriggerMode), let mode = ClickTriggerMode(rawValue: rawValue) {
+            clickTriggerMode = mode
+        }
         if let value = d.object(forKey: Key.rightClickEnabled) as? Bool { rightClickEnabled = value }
         if let value = d.object(forKey: Key.hotkeyEnabled) as? Bool { hotkeyEnabled = value }
         if let value = HotKeySpec(storageValue: d.string(forKey: Key.hotKeySpec)) {
@@ -939,6 +946,7 @@ class AppState: NSObject, ObservableObject {
         middleClickColorHex = "#B48CFF"
         comboBoostEnabled = false
         customEmoji = "✨"
+        clickTriggerMode = .singleClick
         rightClickEnabled = true
         hotKeySpec = .default
         excludedApps = []
@@ -1071,11 +1079,11 @@ nonisolated private func clickBoomHotKeyHandler(
 // MARK: - 应用信息
 enum AppInfo {
     static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.7.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.8.0"
     }
 
     static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "22"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "23"
     }
 
     static var version: String {
@@ -2365,6 +2373,20 @@ struct ControlPanelView: View {
                         trailSection
 
                         SectionCard(icon: "gearshape", title: "选项") {
+                            Picker("点击特效触发", selection: $appState.clickTriggerMode) {
+                                ForEach(ClickTriggerMode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            if appState.clickTriggerMode == .longPress {
+                                Text("按住至少 0.5 秒，未拖动时松手触发。")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Divider().background(Color.white.opacity(0.1))
+
                             Toggle("随机样式", isOn: $appState.randomEffectEnabled)
                                 .toggleStyle(.switch)
                                 .tint(.cyan)
@@ -2391,7 +2413,7 @@ struct ControlPanelView: View {
                             Toggle("右键 / 中键也触发", isOn: $appState.rightClickEnabled)
                                 .toggleStyle(.switch)
                                 .tint(.purple)
-                            Text("右键菜单、中键点击同样弹出效果")
+                            Text("右键和中键遵循相同的触发方式")
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.45))
 
@@ -4288,62 +4310,98 @@ struct EffectOverlayView: View {
 final class GlobalMouseMonitor: ObservableObject {
     private static let motionDispatchInterval: TimeInterval = 1.0 / 60.0
 
+    private struct ClickConfiguration: Equatable {
+        let mode: ClickTriggerMode
+        let rightClickEnabled: Bool
+        let tracksLongPress: Bool
+    }
+
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var clickConfiguration: ClickConfiguration?
+    private var clickGeneration = 0
+    private var clickGesture = ClickGesture()
     private var motionGlobalMonitor: Any?
     private var motionLocalMonitor: Any?
     private var lastMotionDispatchTime = Date.distantPast
-    /// 记录当前是否需要移动监听，权限变化重建时好恢复。
-    private var isMotionActive = false
     private var shouldHandleInput: (() -> Bool)?
 
     var hasMotionMonitor: Bool {
         motionGlobalMonitor != nil || motionLocalMonitor != nil
     }
 
-    func start(engine: EffectEngine, shouldHandleInput: @escaping () -> Bool) {
+    func start(shouldHandleInput: @escaping () -> Bool) {
         self.shouldHandleInput = shouldHandleInput
-        guard globalMonitor == nil, localMonitor == nil else { return }
+    }
 
-        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
-
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self, weak engine] event in
-            guard Self.supports(event) else { return }
-            let button = Self.buttonKind(for: event)
-            DispatchQueue.main.async {
-                guard self?.shouldHandleInput?() == true else { return }
-                guard let point = OverlayGeometry.mousePoint() else { return }
-                engine?.trigger(at: point, button: button)
-            }
+    func syncClicks(mode: ClickTriggerMode, rightClickEnabled: Bool, isRunning: Bool, engine: EffectEngine) {
+        let tracksLongPress = isRunning && mode == .longPress
+        let configuration = ClickConfiguration(mode: mode, rightClickEnabled: rightClickEnabled,
+                                               tracksLongPress: tracksLongPress)
+        guard shouldHandleInput != nil, clickConfiguration != configuration else { return }
+        stopClicks()
+        clickConfiguration = configuration
+        let generation = clickGeneration
+        var mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        if tracksLongPress {
+            mask.formUnion([.leftMouseUp, .rightMouseUp, .otherMouseUp,
+                            .leftMouseDragged, .rightMouseDragged, .otherMouseDragged])
         }
 
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self, weak engine] event in
+            guard let input = Self.clickInput(for: event, tracksLongPress: tracksLongPress) else { return }
+            DispatchQueue.main.async {
+                self?.handleClick(input, engine: engine, generation: generation)
+            }
+        }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self, weak engine] event in
-            if Self.supports(event), self?.shouldHandleInput?() == true, let point = OverlayGeometry.mousePoint() {
-                engine?.trigger(at: point, button: Self.buttonKind(for: event))
+            if let input = Self.clickInput(for: event, tracksLongPress: tracksLongPress) {
+                self?.handleClick(input, engine: engine, generation: generation)
             }
             return event
         }
     }
 
-    /// 右键 / 中键是否也出效果，交给设置决定
-    private static func supports(_ event: NSEvent) -> Bool {
-        guard let kind = pointerInputKind(for: event.type) else { return false }
-        return InputMapping.supports(
-            kind,
-            rightClickEnabled: AppState.shared.rightClickEnabled
-        )
+    func cancelPendingClicks() {
+        clickGesture.reset()
     }
 
-    private static func buttonKind(for event: NSEvent) -> MouseButtonKind {
-        guard let kind = pointerInputKind(for: event.type) else { return .left }
-        return InputMapping.buttonKind(for: kind)
+    private func handleClick(_ input: ClickInput, engine: EffectEngine?, generation: Int) {
+        guard generation == clickGeneration, let configuration = clickConfiguration, let engine,
+              InputMapping.supports(input.kind, rightClickEnabled: configuration.rightClickEnabled) else { return }
+        // 拖拽只用于取消候选，不在每个拖拽事件重新检查前台窗口。
+        if input.phase != .dragged {
+            guard shouldHandleInput?() == true, generation == clickGeneration else { return }
+        }
+        guard let button = clickGesture.receive(input, mode: configuration.mode,
+                                                rightClickEnabled: configuration.rightClickEnabled),
+              let point = OverlayGeometry.mousePoint() else { return }
+        engine.trigger(at: point, button: button)
     }
 
-    private static func pointerInputKind(for eventType: NSEvent.EventType) -> PointerInputKind? {
+    private static func clickInput(for event: NSEvent, tracksLongPress: Bool) -> ClickInput? {
+        let kind: PointerInputKind
+        let phase: ClickInput.Phase
+        switch event.type {
+        case .leftMouseDown: (kind, phase) = (.leftDown, .down)
+        case .rightMouseDown: (kind, phase) = (.rightDown, .down)
+        case .otherMouseDown: (kind, phase) = (.otherDown, .down)
+        case .leftMouseUp: (kind, phase) = (.leftDown, .up)
+        case .rightMouseUp: (kind, phase) = (.rightDown, .up)
+        case .otherMouseUp: (kind, phase) = (.otherDown, .up)
+        case .leftMouseDragged: (kind, phase) = (.leftDown, .dragged)
+        case .rightMouseDragged: (kind, phase) = (.rightDown, .dragged)
+        case .otherMouseDragged: (kind, phase) = (.otherDown, .dragged)
+        default: return nil
+        }
+        let location = tracksLongPress ? (event.cgEvent?.unflippedLocation ?? NSEvent.mouseLocation) : .zero
+        return ClickInput(phase: phase, kind: kind, buttonNumber: event.buttonNumber,
+                          clickCount: phase == .down ? event.clickCount : 0,
+                          timestamp: event.timestamp, location: location)
+    }
+
+    private static func motionInputKind(for eventType: NSEvent.EventType) -> PointerInputKind? {
         switch eventType {
-        case .leftMouseDown: return .leftDown
-        case .rightMouseDown: return .rightDown
-        case .otherMouseDown: return .otherDown
         case .mouseMoved: return .mouseMoved
         case .leftMouseDragged: return .leftDrag
         case .rightMouseDragged: return .rightDrag
@@ -4354,7 +4412,6 @@ final class GlobalMouseMonitor: ObservableObject {
 
     /// 聚光环和拖尾共用移动监听，避免重复注册全局事件。
     func syncMotion(enabled: Bool, engine: EffectEngine) {
-        isMotionActive = enabled
         if enabled {
             startMotion(engine: engine)
         } else {
@@ -4418,7 +4475,7 @@ final class GlobalMouseMonitor: ObservableObject {
 
     private static func shouldExtendTrail(for event: NSEvent) -> Bool {
         let state = AppState.shared
-        guard let kind = pointerInputKind(for: event.type) else { return false }
+        guard let kind = motionInputKind(for: event.type) else { return false }
         return InputMapping.shouldExtendTrail(
             for: kind,
             triggerMode: state.trailTriggerMode,
@@ -4429,7 +4486,7 @@ final class GlobalMouseMonitor: ObservableObject {
         )
     }
 
-    func stop() {
+    private func stopClicks() {
         if let globalMonitor {
             NSEvent.removeMonitor(globalMonitor)
             self.globalMonitor = nil
@@ -4438,20 +4495,19 @@ final class GlobalMouseMonitor: ObservableObject {
             NSEvent.removeMonitor(localMonitor)
             self.localMonitor = nil
         }
-        stopMotion()
-        isMotionActive = false
-        shouldHandleInput = nil
+        clickConfiguration = nil
+        clickGeneration &+= 1
+        cancelPendingClicks()
     }
 
     /// 输入监控权限变化后重建监听：早期注册的监听不会随权限自动开始投递事件。
-    func restart(engine: EffectEngine) {
-        let motionWasActive = isMotionActive
-        let handler = shouldHandleInput
-        stop()
-        guard let handler else { return }
-        start(engine: engine, shouldHandleInput: handler)
-        if motionWasActive {
-            syncMotion(enabled: true, engine: engine)
-        }
+    func resetMonitors() {
+        stopClicks()
+        stopMotion()
+    }
+
+    func stop() {
+        resetMonitors()
+        shouldHandleInput = nil
     }
 }
