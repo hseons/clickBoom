@@ -241,4 +241,47 @@ final class RuntimeControllerTests: XCTestCase {
         XCTAssertTrue(engine.trailPoints.isEmpty)
         XCTAssertNil(engine.pointerPosition)
     }
+
+    @MainActor
+    func testQuietHoursSilencesAndRestoresAtBoundary() {
+        let suite = "ClickBoomTests.Runtime.Quiet.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let state = AppState(defaults: defaults)
+        state.autoSilenceInFullScreen = false
+        state.trailEnabled = true
+        state.quietHoursEnabled = true
+        state.quietHoursStartMinutes = 22 * 60
+        state.quietHoursEndMinutes = 8 * 60
+        let permission = InputPermission(checkAccess: { true })
+        let engine = EffectEngine(state: state)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        var current = calendar.date(
+            from: DateComponents(year: 2026, month: 11, day: 20, hour: 22, minute: 30)
+        )!
+        let runtime = RuntimeController(
+            state: state,
+            permission: permission,
+            engine: engine,
+            monitor: nil,
+            context: { _ in RuntimeContext(app: nil, isFullScreen: false, screenCount: 1) },
+            pointer: { CGPoint(x: 40, y: 50) },
+            now: { current }
+        )
+        defer { runtime.stop(); state.resume() }
+
+        engine.trigger(at: CGPoint(x: 1, y: 1))
+        runtime.refresh()
+        XCTAssertEqual(runtime.status, .quietHours(range: "22:00 – 次日 08:00"))
+        XCTAssertTrue(engine.particles.isEmpty)
+        XCTAssertTrue(engine.trailPoints.isEmpty)
+
+        current = calendar.date(
+            from: DateComponents(year: 2026, month: 11, day: 21, hour: 8, minute: 0)
+        )!
+        runtime.refresh()
+        XCTAssertEqual(runtime.status, .running)
+        XCTAssertEqual(engine.pointerPosition, CGPoint(x: 40, y: 50))
+    }
 }

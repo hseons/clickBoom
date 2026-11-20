@@ -27,4 +27,48 @@ final class RuntimeStatusTests: XCTestCase {
             ), expected, "组合 \(mask)")
         }
     }
+
+    func testQuietHoursOutranksExclusionAndFullScreenButNotPause() {
+        let app = ExcludedApp(bundleID: "test.app", name: "演示")
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 20, hour: 22, minute: 30))!
+        let quiet = QuietHours(isEnabled: true, startMinutes: 22 * 60, endMinutes: 8 * 60)
+
+        func resolve(
+            enabled: Bool = true,
+            granted: Bool = true,
+            paused: Bool = false,
+            quietHours: QuietHours = quiet
+        ) -> RuntimeStatus {
+            RuntimeStatus.resolve(
+                isEnabled: enabled, hasPermission: granted, isPaused: paused,
+                quietHours: quietHours, now: now,
+                excludedApp: app, autoSilenceInFullScreen: true,
+                isFullScreen: true, appName: app.name
+            )
+        }
+
+        XCTAssertEqual(resolve(), .quietHours(range: quiet.rangeLabel))
+        XCTAssertEqual(resolve(enabled: false), .disabled)
+        XCTAssertEqual(resolve(granted: false), .permissionRequired)
+        XCTAssertEqual(resolve(paused: true), .paused)
+        XCTAssertEqual(
+            resolve(quietHours: QuietHours(isEnabled: true, startMinutes: 600, endMinutes: 600)),
+            .excluded(appName: "演示")
+        )
+    }
+
+    func testQuietHoursStopsAtEndMinute() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let quiet = QuietHours(isEnabled: true, startMinutes: 22 * 60, endMinutes: 8 * 60)
+        let atEnd = calendar.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 8, minute: 0))!
+        let status = RuntimeStatus.resolve(
+            isEnabled: true, hasPermission: true, isPaused: false,
+            quietHours: quiet, now: atEnd, excludedApp: nil,
+            autoSilenceInFullScreen: false, isFullScreen: false, appName: "前台 App"
+        )
+        XCTAssertEqual(status, .running)
+    }
 }

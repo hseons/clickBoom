@@ -333,6 +333,9 @@ class AppState: NSObject, ObservableObject {
         static let hotKeySpec = "hotKeySpec"
         static let excludedApps = "excludedApps"
         static let autoSilenceInFullScreen = "autoSilenceInFullScreen"
+        static let quietHoursEnabled = "quietHoursEnabled"
+        static let quietHoursStart = "quietHoursStart"
+        static let quietHoursEnd = "quietHoursEnd"
         static let savedPresets = "savedPresets"
         static let presetImportRecovery = "presetImportRecovery"
     }
@@ -446,6 +449,16 @@ class AppState: NSObject, ObservableObject {
     @Published var autoSilenceInFullScreen: Bool = true {
         didSet { defaults.set(autoSilenceInFullScreen, forKey: Key.autoSilenceInFullScreen) }
     }
+    /// 免打扰时段：在固定的起止分钟之间自动暂停，跨零点同样支持
+    @Published var quietHoursEnabled: Bool = false {
+        didSet { defaults.set(quietHoursEnabled, forKey: Key.quietHoursEnabled) }
+    }
+    @Published var quietHoursStartMinutes: Int = QuietHours.defaultStartMinutes {
+        didSet { defaults.set(quietHoursStartMinutes, forKey: Key.quietHoursStart) }
+    }
+    @Published var quietHoursEndMinutes: Int = QuietHours.defaultEndMinutes {
+        didSet { defaults.set(quietHoursEndMinutes, forKey: Key.quietHoursEnd) }
+    }
     @Published var savedPresets: [PresetSnapshot] = [] {
         didSet {
             guard let data = try? JSONEncoder().encode(savedPresets) else { return }
@@ -521,6 +534,15 @@ class AppState: NSObject, ObservableObject {
         }
         if let value = d.object(forKey: Key.autoSilenceInFullScreen) as? Bool {
             autoSilenceInFullScreen = value
+        }
+        if let value = d.object(forKey: Key.quietHoursEnabled) as? Bool {
+            quietHoursEnabled = value
+        }
+        if let value = d.object(forKey: Key.quietHoursStart) as? NSNumber {
+            quietHoursStartMinutes = value.intValue
+        }
+        if let value = d.object(forKey: Key.quietHoursEnd) as? NSNumber {
+            quietHoursEndMinutes = value.intValue
         }
         if let data = d.data(forKey: Key.savedPresets),
            let decoded = try? JSONDecoder().decode([PresetSnapshot].self, from: data) {
@@ -898,13 +920,25 @@ class AppState: NSObject, ObservableObject {
         excludedApps = AppExclusionLogic.removing(app, from: excludedApps)
     }
 
-    /// 导出设置备份：快捷键 + 排除列表 + 全屏静默开关
+    /// 当前生效的免打扰规则；面板、诊断和运行时都读这一份。
+    var quietHours: QuietHours {
+        QuietHours(
+            isEnabled: quietHoursEnabled,
+            startMinutes: quietHoursStartMinutes,
+            endMinutes: quietHoursEndMinutes
+        )
+    }
+
+    /// 导出设置备份：快捷键 + 排除列表 + 全屏静默 + 免打扰时段
     func settingsBackup() -> SettingsBackup {
         SettingsBackup(
             hotKeySpec: hotKeySpec.storageValue,
             hotKeyEnabled: hotkeyEnabled,
             autoSilenceInFullScreen: autoSilenceInFullScreen,
-            excludedApps: excludedApps
+            excludedApps: excludedApps,
+            quietHoursEnabled: quietHoursEnabled,
+            quietHoursStartMinutes: quietHoursStartMinutes,
+            quietHoursEndMinutes: quietHoursEndMinutes
         )
     }
 
@@ -915,6 +949,10 @@ class AppState: NSObject, ObservableObject {
         }
         hotkeyEnabled = backup.hotKeyEnabled
         autoSilenceInFullScreen = backup.autoSilenceInFullScreen
+        let mergedQuietHours = backup.applyingQuietHours(to: quietHours)
+        quietHoursEnabled = mergedQuietHours.isEnabled
+        quietHoursStartMinutes = mergedQuietHours.startMinutes
+        quietHoursEndMinutes = mergedQuietHours.endMinutes
         excludedApps = SettingsBackupLogic.mergingExclusions(backup.excludedApps)
         HotKeyManager.shared.sync()
     }
@@ -951,6 +989,9 @@ class AppState: NSObject, ObservableObject {
         hotKeySpec = .default
         excludedApps = []
         autoSilenceInFullScreen = true
+        quietHoursEnabled = false
+        quietHoursStartMinutes = QuietHours.defaultStartMinutes
+        quietHoursEndMinutes = QuietHours.defaultEndMinutes
         comboCount = 0
         HotKeyManager.shared.sync()
     }
@@ -2586,6 +2627,10 @@ struct ControlPanelView: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.45))
                                 .fixedSize(horizontal: false, vertical: true)
+
+                            Divider().background(Color.white.opacity(0.1))
+
+                            QuietHoursControls(state: appState)
 
                             Divider().background(Color.white.opacity(0.1))
 

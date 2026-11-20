@@ -1,6 +1,6 @@
 import Foundation
 
-/// 「设置备份」：快捷键、全屏静默开关和排除列表的导出格式。
+/// 「设置备份」：快捷键、全屏静默开关、免打扰时段和排除列表的导出格式。
 ///
 /// 故意和预设归档分成两个文件，以后单独调整预设 schema 时不会牵连到设置备份。
 nonisolated struct SettingsBackup: Codable, Equatable {
@@ -9,19 +9,38 @@ nonisolated struct SettingsBackup: Codable, Equatable {
     var hotKeyEnabled: Bool
     var autoSilenceInFullScreen: Bool
     var excludedApps: [ExcludedApp]
+    /// 1.9 新增，可选是为了继续读 1.5–1.8 导出的旧备份。
+    var quietHoursEnabled: Bool?
+    var quietHoursStartMinutes: Int?
+    var quietHoursEndMinutes: Int?
 
     init(
         schemaVersion: Int = SettingsBackupLogic.schemaVersion,
         hotKeySpec: String,
         hotKeyEnabled: Bool,
         autoSilenceInFullScreen: Bool,
-        excludedApps: [ExcludedApp]
+        excludedApps: [ExcludedApp],
+        quietHoursEnabled: Bool? = nil,
+        quietHoursStartMinutes: Int? = nil,
+        quietHoursEndMinutes: Int? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.hotKeySpec = hotKeySpec
         self.hotKeyEnabled = hotKeyEnabled
         self.autoSilenceInFullScreen = autoSilenceInFullScreen
         self.excludedApps = excludedApps
+        self.quietHoursEnabled = quietHoursEnabled
+        self.quietHoursStartMinutes = quietHoursStartMinutes
+        self.quietHoursEndMinutes = quietHoursEndMinutes
+    }
+
+    /// 把备份里的免打扰字段合进当前设置；旧备份缺少这些字段时保持当前值。
+    func applyingQuietHours(to quietHours: QuietHours) -> QuietHours {
+        QuietHours(
+            isEnabled: quietHoursEnabled ?? quietHours.isEnabled,
+            startMinutes: quietHoursStartMinutes ?? quietHours.startMinutes,
+            endMinutes: quietHoursEndMinutes ?? quietHours.endMinutes
+        )
     }
 }
 

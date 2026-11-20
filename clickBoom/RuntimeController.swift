@@ -45,9 +45,12 @@ final class RuntimeController: ObservableObject {
     private let monitor: GlobalMouseMonitor?
     private let context: (Bool) -> RuntimeContext
     private let pointer: () -> CGPoint?
+    private let now: () -> Date
     private var subscriptions: Set<AnyCancellable> = []
     private var spaceRefresh: Task<Void, Never>?
     private var fullScreenTimer: Timer?
+    private var quietHoursTimer: Timer?
+    private var quietHoursBoundary: Date?
     private var started = false
     private var hadPermission = false
 
@@ -55,7 +58,8 @@ final class RuntimeController: ObservableObject {
         self.init(state: .shared, permission: .shared, engine: .shared,
                   monitor: GlobalMouseMonitor(),
                   context: { RuntimeContext.current(forceRefresh: $0) },
-                  pointer: { OverlayGeometry.mousePoint() })
+                  pointer: { OverlayGeometry.mousePoint() },
+                  now: { Date() })
     }
 
     init(
@@ -64,7 +68,8 @@ final class RuntimeController: ObservableObject {
         engine: EffectEngine,
         monitor: GlobalMouseMonitor?,
         context: @escaping (Bool) -> RuntimeContext,
-        pointer: @escaping () -> CGPoint?
+        pointer: @escaping () -> CGPoint?,
+        now: @escaping () -> Date = { Date() }
     ) {
         self.state = state
         self.permission = permission
@@ -72,6 +77,7 @@ final class RuntimeController: ObservableObject {
         self.monitor = monitor
         self.context = context
         self.pointer = pointer
+        self.now = now
     }
 
     func start() {
@@ -90,6 +96,9 @@ final class RuntimeController: ObservableObject {
             state.$pauseUntil.map { _ in () }.eraseToAnyPublisher(),
             state.$excludedApps.map { _ in () }.eraseToAnyPublisher(),
             state.$autoSilenceInFullScreen.map { _ in () }.eraseToAnyPublisher(),
+            state.$quietHoursEnabled.map { _ in () }.eraseToAnyPublisher(),
+            state.$quietHoursStartMinutes.map { _ in () }.eraseToAnyPublisher(),
+            state.$quietHoursEndMinutes.map { _ in () }.eraseToAnyPublisher(),
             state.$clickTriggerMode.map { _ in () }.eraseToAnyPublisher(),
             state.$rightClickEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$trailEnabled.map { _ in () }.eraseToAnyPublisher(),
@@ -138,6 +147,8 @@ final class RuntimeController: ObservableObject {
             isEnabled: state.isEnabled,
             hasPermission: permission.isGranted,
             isPaused: state.isPaused,
+            quietHours: state.quietHours,
+            now: now(),
             excludedApp: excluded,
             autoSilenceInFullScreen: state.autoSilenceInFullScreen,
             isFullScreen: snapshot.isFullScreen,
@@ -168,7 +179,10 @@ final class RuntimeController: ObservableObject {
 
         // 静默时已释放移动监听；低频检查让同一空间内的全屏退出和静止指针也能恢复。
         // 关闭、无权限、暂停或排除时停止检查。诊断面板不拥有此计时器。
+        // 免打扰时段内不复查全屏：这段时间本来就不显示特效，时段结束时由边界计时器恢复。
+        let inQuietHours = state.quietHours.isActive(at: now())
         let needsFullScreenCheck = state.isEnabled && permission.isGranted && !state.isPaused
+            && !inQuietHours
             && excluded == nil && snapshot.app != nil && state.autoSilenceInFullScreen
         if started && needsFullScreenCheck && fullScreenTimer == nil {
             let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -183,6 +197,31 @@ final class RuntimeController: ObservableObject {
             fullScreenTimer?.invalidate()
             fullScreenTimer = nil
         }
+
+        syncQuietHoursTimer()
+    }
+
+    /// 免打扰只安排下一次边界的一次性计时器，平时不轮询；系统唤醒和设置变化都会重建。
+    private func syncQuietHoursTimer() {
+        let quietHours = state.quietHours
+        guard started, let boundary = quietHours.nextBoundary(after: now()) else {
+            quietHoursTimer?.invalidate()
+            quietHoursTimer = nil
+            quietHoursBoundary = nil
+            return
+        }
+        if quietHoursBoundary == boundary, quietHoursTimer != nil { return }
+        quietHoursTimer?.invalidate()
+        let timer = Timer(fire: boundary, interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.quietHoursTimer = nil
+                self?.quietHoursBoundary = nil
+                self?.refresh(forceFullScreen: true)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        quietHoursTimer = timer
+        quietHoursBoundary = boundary
     }
 
     func diagnostics() -> RuntimeDiagnostics {
@@ -193,6 +232,9 @@ final class RuntimeController: ObservableObject {
             status: status.title,
             permissionGranted: permission.isGranted,
             appName: targetApp?.name ?? "暂无外部应用",
+            quietHours: state.quietHours.isEnabled
+                ? "\(state.quietHours.rangeLabel)\(state.quietHours.isActive(at: now()) ? "（生效中）" : "")"
+                : "未开启",
             bundleID: targetApp?.bundleID ?? "—",
             screenCount: context(false).screenCount,
             motionActive: monitor?.hasMotionMonitor == true,
@@ -208,6 +250,9 @@ final class RuntimeController: ObservableObject {
         spaceRefresh = nil
         fullScreenTimer?.invalidate()
         fullScreenTimer = nil
+        quietHoursTimer?.invalidate()
+        quietHoursTimer = nil
+        quietHoursBoundary = nil
         monitor?.stop()
         engine.clearEffects()
     }
@@ -218,6 +263,7 @@ struct RuntimeDiagnostics {
     let status: String
     let permissionGranted: Bool
     let appName: String
+    let quietHours: String
     let bundleID: String
     let screenCount: Int
     let motionActive: Bool

@@ -5,6 +5,7 @@ nonisolated enum RuntimeStatus: Equatable {
     case disabled
     case permissionRequired
     case paused
+    case quietHours(range: String)
     case excluded(appName: String)
     case fullScreen(appName: String)
     case running
@@ -13,6 +14,8 @@ nonisolated enum RuntimeStatus: Equatable {
         isEnabled: Bool,
         hasPermission: Bool,
         isPaused: Bool,
+        quietHours: QuietHours = QuietHours(),
+        now: Date = Date(),
         excludedApp: ExcludedApp?,
         autoSilenceInFullScreen: Bool,
         isFullScreen: Bool,
@@ -21,6 +24,7 @@ nonisolated enum RuntimeStatus: Equatable {
         if !isEnabled { return .disabled }
         if !hasPermission { return .permissionRequired }
         if isPaused { return .paused }
+        if quietHours.isActive(at: now) { return .quietHours(range: quietHours.rangeLabel) }
         if let excludedApp { return .excluded(appName: excludedApp.name) }
         if autoSilenceInFullScreen && isFullScreen { return .fullScreen(appName: appName) }
         return .running
@@ -33,6 +37,7 @@ nonisolated enum RuntimeStatus: Equatable {
         case .disabled: return "特效已关闭"
         case .permissionRequired: return "等待输入监控权限"
         case .paused: return "特效已暂停"
+        case .quietHours: return "免打扰时段静默中"
         case .excluded(let name): return "已在「\(name)」中静默"
         case .fullScreen(let name): return "「\(name)」全屏静默中"
         case .running: return "特效运行中"
@@ -44,6 +49,7 @@ nonisolated enum RuntimeStatus: Equatable {
         case .disabled: return "power"
         case .permissionRequired: return "exclamationmark.shield.fill"
         case .paused: return "pause.circle.fill"
+        case .quietHours: return "moon.zzz.fill"
         case .excluded: return "eye.slash.fill"
         case .fullScreen: return "rectangle.expand.vertical"
         case .running: return "sparkles"

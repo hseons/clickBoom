@@ -27,16 +27,18 @@ struct RuntimeStatusView: View {
                     .font(.system(size: 11))
                     .fixedSize()
                     .popover(isPresented: $showingSilenceSettings) {
-                        VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 12) {
                             Toggle("全屏时自动静默", isOn: $state.autoSilenceInFullScreen)
                                 .toggleStyle(.switch)
                             Text("开启后，前台应用全屏时暂停全局特效，退出全屏自动恢复。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
+                            Divider()
+                            QuietHoursControls(state: state)
                         }
                         .padding(16)
-                        .frame(width: 270)
+                        .frame(width: 290)
                         .preferredColorScheme(.dark)
                     }
             }
@@ -59,6 +61,7 @@ struct RuntimeStatusView: View {
         case .disabled: return "打开总开关后恢复全局特效；预览仍可使用。"
         case .permissionRequired: return "在系统设置中开启输入监控，授权后自动生效。"
         case .paused: return state.pauseRemainingText
+        case .quietHours(let range): return "每天 \(range) 自动静默，结束时间到点恢复；预览仍可使用。"
         case .excluded: return "切换到其他应用时自动恢复；预览仍可使用。"
         case .fullScreen: return "退出全屏时自动恢复；预览仍可使用。"
         case .running:
@@ -71,6 +74,7 @@ struct RuntimeStatusView: View {
         case .disabled: return "开启"
         case .permissionRequired: return "去授权"
         case .paused: return "恢复"
+        case .quietHours: return "免打扰设置"
         case .excluded: return "取消静默"
         case .fullScreen: return "静默设置"
         case .running: return nil
@@ -86,7 +90,7 @@ struct RuntimeStatusView: View {
         case .paused: state.resume()
         case .excluded:
             if let app = runtime.targetApp { state.removeExcludedApp(app) }
-        case .fullScreen: showingSilenceSettings = true
+        case .quietHours, .fullScreen: showingSilenceSettings = true
         case .running: break
         }
         runtime.refresh(forceFullScreen: true)
@@ -111,6 +115,7 @@ struct RuntimeDiagnosticsView: View {
                     row("输入监控", snapshot.permissionGranted ? "已授权" : "未授权")
                     row("作用应用", snapshot.appName)
                     row("应用标识", snapshot.bundleID)
+                    row("免打扰时段", snapshot.quietHours)
                     row("显示器数量", "\(snapshot.screenCount)")
                     row("移动监听", snapshot.motionActive ? "监听中" : "已停止")
                     row("粒子数量", "\(snapshot.particleCount)")
