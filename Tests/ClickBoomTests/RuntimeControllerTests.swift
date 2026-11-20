@@ -255,8 +255,7 @@ final class RuntimeControllerTests: XCTestCase {
         state.quietHoursEndMinutes = 8 * 60
         let permission = InputPermission(checkAccess: { true })
         let engine = EffectEngine(state: state)
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let calendar = Calendar.current
         var current = calendar.date(
             from: DateComponents(year: 2026, month: 11, day: 20, hour: 22, minute: 30)
         )!

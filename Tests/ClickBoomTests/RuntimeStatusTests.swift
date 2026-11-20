@@ -30,8 +30,7 @@ final class RuntimeStatusTests: XCTestCase {
 
     func testQuietHoursOutranksExclusionAndFullScreenButNotPause() {
         let app = ExcludedApp(bundleID: "test.app", name: "演示")
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let calendar = Calendar.current
         let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 20, hour: 22, minute: 30))!
         let quiet = QuietHours(isEnabled: true, startMinutes: 22 * 60, endMinutes: 8 * 60)
 
@@ -60,8 +59,7 @@ final class RuntimeStatusTests: XCTestCase {
     }
 
     func testQuietHoursStopsAtEndMinute() {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let calendar = Calendar.current
         let quiet = QuietHours(isEnabled: true, startMinutes: 22 * 60, endMinutes: 8 * 60)
         let atEnd = calendar.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 8, minute: 0))!
         let status = RuntimeStatus.resolve(

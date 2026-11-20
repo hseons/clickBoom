@@ -41,6 +41,7 @@
 - SHA-256：`cb424d0d2b216eb8baaed04fc2b5b59c8a45d7574e023b91220b565fa1eddc88`。
 - 挂载后 `codesign --verify --deep --strict` 通过，保留 App Sandbox、用户选择文件读写与网络客户端权限；`git diff --check` 通过。
 - 冒烟启动：把 DMG 内应用复制到临时目录 `open -n` 启动，进程常驻、空闲 CPU 0%，控制面板可正常打开；已安装的 1.6.0（21）未被覆盖，冒烟实例已退出。
+- 时区修正：CI 首次运行在 UTC 下失败 7 个断言，原因是测试用「上海时区的日期 + 本机日历」判断区间。测试改为统一用 `Calendar.current` 构造时刻，`TZ=UTC swift test` 与本机时区各跑一遍均 78 个通过。
 - 本机环境：macOS 27.2.1、Apple Silicon、单屏。多屏与竖屏仍未验收，等待外接设备。
 - 发布状态：随本次推送发布 GitHub Release `v1.9.0` 并附 DMG。
 
