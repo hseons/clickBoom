@@ -227,6 +227,25 @@ final class RuntimeController: ObservableObject {
     func diagnostics() -> RuntimeDiagnostics {
         permission.refresh()
         refresh(forceFullScreen: true)
+        let budget = EffectBudgetStore.shared
+        let budgetSnapshot = budget.currentSnapshot
+        let tier = budget.tier
+        let frameCost: String
+        if let p90 = budgetSnapshot.liveP90Millis, budgetSnapshot.liveSampleCount > 0 {
+            frameCost = String(format: "p90 %.1f ms（%d 帧）", p90, budgetSnapshot.liveSampleCount)
+        } else if let last = budgetSnapshot.lastP90Millis {
+            frameCost = String(format: "p90 %.1f ms（上次采样）", last)
+        } else {
+            frameCost = "暂无活动帧"
+        }
+        let stallText = budgetSnapshot.stallRatio > 0.05
+            ? String(format: "，卡帧 %.0f%%", budgetSnapshot.stallRatio * 100)
+            : ""
+        let tierText = tier.title
+            + (budget.isPinned ? "（已固定）" : budgetSnapshot.isDegraded ? "（自动降级）" : "")
+        let budgetText = "粒子 \(tier.particleLimit) · 轨迹 \(tier.trailPointLimit) · "
+            + "\(Int((1.0 / tier.frameInterval).rounded())) fps"
+
         return RuntimeDiagnostics(
             capturedAt: Date(),
             status: status.title,
@@ -239,7 +258,10 @@ final class RuntimeController: ObservableObject {
             screenCount: context(false).screenCount,
             motionActive: monitor?.hasMotionMonitor == true,
             particleCount: engine.particles.count,
-            trailPointCount: engine.trailPoints.count
+            trailPointCount: engine.trailPoints.count,
+            performanceTier: tierText,
+            frameCost: frameCost + stallText,
+            budgetLimits: budgetText
         )
     }
 
@@ -269,4 +291,7 @@ struct RuntimeDiagnostics {
     let motionActive: Bool
     let particleCount: Int
     let trailPointCount: Int
+    let performanceTier: String
+    let frameCost: String
+    let budgetLimits: String
 }

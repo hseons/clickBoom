@@ -3264,20 +3264,29 @@ class EffectEngine: ObservableObject {
     static let shared = EffectEngine()
 
     private let state: AppState
+    private let budgetStore: EffectBudgetStore
 
     convenience init() {
         self.init(state: .shared)
     }
 
-    init(state: AppState) {
+    init(state: AppState, budgetStore: EffectBudgetStore = .shared) {
         self.state = state
+        self.budgetStore = budgetStore
+        // 预算降级时立即裁剪已有元素；升级不会补回已丢弃的粒子。
+        budgetStore.$tier
+            .removeDuplicates()
+            .sink { [weak self] tier in self?.applyBudget(tier) }
+            .store(in: &budgetSubscriptions)
     }
 
-    /// 全屏连点时的粒子总量上限，超过就丢掉最旧的一批，避免绘制开销拖垮帧率。
-    private static let maxParticles = 600
+    /// 全屏连点时的粒子总量上限由当前预算档位决定，超出就丢掉最旧的一批。
+    private var particleLimit: Int { budgetStore.tier.particleLimit }
 
-    /// 拖尾的采样点上限：即便拉得很长也只保留最后一小段
-    private static let maxTrailPoints = 180
+    /// 拖尾的采样点上限同样跟随预算档位
+    private var trailPointLimit: Int { budgetStore.tier.trailPointLimit }
+
+    private var budgetSubscriptions: Set<AnyCancellable> = []
 
     @Published var particles: [Particle] = []
     /// 滑动拖尾的轨迹点，按时间从旧到新排列
@@ -3350,7 +3359,7 @@ class EffectEngine: ObservableObject {
                 button: button
             ))
         }
-        let overflow = max(0, particles.count + newParticles.count - Self.maxParticles)
+        let overflow = max(0, particles.count + newParticles.count - particleLimit)
         if overflow > 0 {
             particles.removeFirst(min(overflow, particles.count))
         }
@@ -3407,8 +3416,8 @@ class EffectEngine: ObservableObject {
 
     private func appendTrailPoint(_ point: CGPoint, at time: Date) {
         trailPoints.append(TrailPoint(x: point.x, y: point.y, time: time))
-        if trailPoints.count > Self.maxTrailPoints {
-            trailPoints.removeFirst(trailPoints.count - Self.maxTrailPoints)
+        if trailPoints.count > trailPointLimit {
+            trailPoints.removeFirst(trailPoints.count - trailPointLimit)
         }
     }
 
@@ -3461,6 +3470,18 @@ class EffectEngine: ObservableObject {
         lastClickTime = .distantPast
         comboLevel = 0
         if state.comboCount != 0 { state.comboCount = 0 }
+        // 静默、切换空间或屏幕后不从旧的负载结论继续降级
+        budgetStore.restartIfIdle()
+    }
+
+    /// 预算档位变化：把超出新上限的元素裁掉，旧的拖尾点优先丢弃。
+    func applyBudget(_ tier: EffectPerformanceTier) {
+        if particles.count > tier.particleLimit {
+            particles.removeFirst(particles.count - tier.particleLimit)
+        }
+        if trailPoints.count > tier.trailPointLimit {
+            trailPoints.removeFirst(trailPoints.count - tier.trailPointLimit)
+        }
     }
 
     func cleanUp(currentTime: Date) {
@@ -3481,6 +3502,19 @@ class EffectEngine: ObservableObject {
            currentTime.timeIntervalSince(spotlightPulseStart) >= 0.42 {
             self.spotlightPulseStart = nil
         }
+
+        // 动画全部结束后清空采样窗口，下一段动画重新从默认画质开始测量。
+        // cleanUp 在视图更新中调用，延后一拍复位，避免在绘制过程中改档位。
+        if particles.isEmpty, trailPoints.isEmpty, spotlightPulseStart == nil {
+            let store = budgetStore
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.particles.isEmpty,
+                      self.trailPoints.isEmpty,
+                      self.spotlightPulseStart == nil else { return }
+                store.restartIfIdle()
+            }
+        }
     }
 }
 
@@ -3489,14 +3523,22 @@ struct EffectOverlayView: View {
     @ObservedObject var appState = AppState.shared
     @ObservedObject private var runtime = RuntimeController.shared
     @ObservedObject private var accessibility = AccessibilitySettings.shared
+    @ObservedObject private var budget = EffectBudgetStore.shared
 
     var body: some View {
-        // 静止的聚光环靠鼠标位置变化驱动；只在有动画时保持 60fps。
+        // 静止的聚光环靠鼠标位置变化驱动；只在有动画时按当前预算的刷新率绘制。
         TimelineView(.animation(
-            minimumInterval: 1.0 / 60.0,
+            minimumInterval: budget.tier.frameInterval,
             paused: engine.particles.isEmpty && engine.trailPoints.isEmpty && engine.spotlightPulseStart == nil
         )) { context in
             Canvas { ctx, size in
+                // 只测 Canvas 绘制本身的耗时，用于决定是否降低同屏元素上限。
+                let drawStartedAt = ProcessInfo.processInfo.systemUptime
+                defer {
+                    let drawEndedAt = ProcessInfo.processInfo.systemUptime
+                    FrameCostProbe.shared.record(drawSeconds: drawEndedAt - drawStartedAt, at: drawEndedAt)
+                }
+
                 let now = context.date
                 let durationSec = appState.durationMs / 1000.0
                 let sizeVal = appState.particleSize

@@ -105,7 +105,7 @@ struct RuntimeDiagnosticsView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("运行诊断")
                 .font(.headline)
-            Text("只在打开和点击刷新时读取，不保存文件或上传。面板显示最近外部应用的状态。")
+            Text("只在打开和点击刷新时读取，不保存文件或上传。面板显示最近外部应用的状态；帧耗时为最近一段动画的绘制分位值，仅供排查。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -120,6 +120,9 @@ struct RuntimeDiagnosticsView: View {
                     row("移动监听", snapshot.motionActive ? "监听中" : "已停止")
                     row("粒子数量", "\(snapshot.particleCount)")
                     row("轨迹点数", "\(snapshot.trailPointCount)")
+                    row("性能档位", snapshot.performanceTier)
+                    row("帧绘制耗时", snapshot.frameCost)
+                    row("预算上限", snapshot.budgetLimits)
                 }
                 Text("读取时间：\(snapshot.capturedAt.formatted(date: .omitted, time: .standard))")
                     .font(.caption2)
