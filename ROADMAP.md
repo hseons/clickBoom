@@ -38,7 +38,8 @@
 ## 1.10 发布记录
 
 - DMG：`dist/ClickBoom-1.10.0.dmg`，包内版本 1.10.0（25），arm64 + x86_64，ad-hoc 签名，未公证。
-- SHA-256：`ec67a44c351c4da530b9883153dc6fa0978f399be4adc97ce684929cb63a6af4`。
+- 本地验证包 SHA-256：`ec67a44c351c4da530b9883153dc6fa0978f399be4adc97ce684929cb63a6af4`（`scripts/release.sh` 本机构建）。
+- GitHub Release `v1.10.0` 附件由发布工作流在 CI 上重新构建，SHA-256：`f6d859e4576e3270187b845a38d4cd5732adffaaad8fe892a9f9b646e6bc008d`（以 Release 页附件为准）。
 - 挂载后 `codesign --verify --deep --strict` 通过，保留 App Sandbox、用户选择文件读写与网络客户端权限。
 - 冒烟启动：把 DMG 内应用复制到临时目录 `open -n` 启动，空闲 CPU 与 1.9.0 同机对照同量级（`top` 3 秒采样 1.4–4.6%，1.9.0 为 3.1–5.2%，含既有的 0.5 秒全屏复查），无崩溃报告；冒烟实例已退出。
 - 本机环境：macOS 27.2.1、Apple Silicon、单屏。实机自适应升降档的 CPU / 唤醒对照尚未采样，`docs/performance-baseline-results.md` 待补。
