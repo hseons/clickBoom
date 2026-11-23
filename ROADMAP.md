@@ -135,7 +135,7 @@
 - DMG：`dist/ClickBoom-1.11.0.dmg`，包内版本 1.11.0（26），arm64 + x86_64，ad-hoc 签名，未公证。
 - 本地验证包 SHA-256：`8f1b039bd439e149b41e223d04bd4ecd326fe0441b2762fe77483ec18ce3ef28`（`scripts/release.sh` 本机构建，2.1 MB）。
 - 挂载后 `codesign --verify --deep --strict` 通过，Identifier 为 `mumu.AIGG.clickBoom`，保留 App Sandbox、用户选择文件读写与网络客户端权限。
-- GitHub Release `v1.11.0` 附件由发布工作流在 CI 上重新构建，SHA-256 以 Release 页附件为准。
+- GitHub Release `v1.11.0` 附件与本地构建一致（发布工作流检测到已有 DMG 后跳过上传），SHA-256：`8f1b039bd439e149b41e223d04bd4ecd326fe0441b2762fe77483ec18ce3ef28`。
 - 发布状态：随本次推送发布 GitHub Release `v1.11.0`。
 
 ## 已交付：1.6.0 预设管理
