@@ -4445,6 +4445,13 @@ struct EffectOverlayView: View {
             ? 1.0
             : 0.88 + 0.12 * sin(now.timeIntervalSinceReferenceDate * 9.0)
 
+        // 毛笔不是分段描边，而是整条轨迹一次填充成笔锋；必须在分桶之前走自己的路径，
+        // 否则会落到下面的 switch 里被跳过，整种样式直接不显示。
+        if style == .brush {
+            drawBrushStroke(now: now, points: points, color: color, baseWidth: baseWidth, life: life, context: context)
+            return
+        }
+
         // 逐段 stroke 的开销随采样点线性增长：180 个点时每种样式每帧要画 500+ 次，
         // 高刷屏上很容易掉帧。这里先按「新鲜度」把线段装进 8 个桶，每个桶合并成一条
         // Path 只描边一次，观感几乎不变，描边次数从数百降到几十。

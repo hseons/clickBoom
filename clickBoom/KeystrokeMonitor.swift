@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Combine
 import Carbon
 import Foundation
@@ -6,9 +7,10 @@ import os
 
 /// 键盘事件源。
 ///
-/// 首选 `CGEventTap`（listenOnly，不拦截、不改事件），拿不到就回退到
-/// `NSEvent` 全局监听——后者在部分系统上只能收到 keyDown，没有 keyUp，
-/// 但配合「按下即显示」的 HUD 逻辑已经够用。
+/// 首选 `CGEventTap`（listenOnly，不拦截、不改事件），由「输入监控」授权门控。
+/// 拿不到就回退到 `NSEvent` 全局监听，但这条回退路由「辅助功能」门控：
+/// 实测（macOS 27.2.1）只有输入监控时，NSEvent 收不到 keyDown / keyUp，
+/// 只能收到 flagsChanged；辅助功能授权后 keyDown / keyUp 才正常。
 @MainActor
 final class KeystrokeMonitor: ObservableObject {
     static let shared = KeystrokeMonitor()
@@ -98,11 +100,29 @@ final class KeystrokeMonitor: ObservableObject {
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        // tapCreate 在没授权时也会返回非 nil，只是 tap 处于禁用状态、收不到
+        // 任何事件。必须再查一次 tapIsEnabled，否则会「监听成功」地空转。
+        guard CGEvent.tapIsEnabled(tap: tap) else {
+            log.error("tap created but disabled (listen access inactive)")
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            self.tap = nil
+            runLoopSource = nil
+            return false
+        }
         isFallbackActive = false
         return true
     }
 
     private func installFallback() -> Bool {
+        // NSEvent 全局键盘监听由辅助功能门控；只有输入监控时它只会收到
+        // flagsChanged（修饰键），普通按键全部丢失，装上也只会误导用户。
+        guard AXIsProcessTrusted() else {
+            log.error("fallback unavailable: accessibility not granted")
+            isFallbackActive = false
+            return false
+        }
         let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.handleFallback(event)
@@ -196,8 +216,9 @@ final class KeystrokeMonitor: ObservableObject {
         if tapFailureCount >= 3 {
             // 反复被禁：说明 tap 在这台机器上不可靠，常驻回退方案。
             stop()
-            isRunning = true
-            _ = installFallback()
+            // 回退装不上时保持停止，让下一次 sync 重新尝试 tap，而不是
+            // 留一个 isRunning=true 的空监听。
+            isRunning = installFallback()
             return
         }
         if let tap {

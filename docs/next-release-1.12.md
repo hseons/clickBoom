@@ -53,7 +53,7 @@
 - `clickBoom/ContentView.swift` 已 4654 行。1.12 的新逻辑一律放新文件，`ContentView.swift` 只做接线和 UI 挂载，不再增长核心逻辑。
 - `Package.swift` 用 `-default-isolation MainActor`，纯逻辑要显式 `nonisolated`（参照 `HotKeySpec`）才能被 XCTest 直接调用。
 - Xcode 工程是 objectVersion 77 的同步组（`PBXFileSystemSynchronizedRootGroup`），新文件自动进 target；但 SPM target 要加音频资源必须补 `resources:`，否则 `swift test` 与 `swift build` 拿不到文件。
-- 目前只有一项系统权限：输入监控。1.12 不新增权限（放大镜要 Screen Recording，放 1.13）。
+- 目前只有一项系统权限：输入监控。1.12 不新增权限（放大镜要 Screen Recording，放 1.13）。实测见 [input-permission-matrix.md](input-permission-matrix.md)：鼠标特效零权限，辅助功能是输入监控的超集。
 
 ## 竞品对照
 
@@ -134,7 +134,7 @@
 **取舍**：
 
 - 事件源用 `CGEventTap`（`.cgSessionEventTap`，`.listenOnly`，mask `keyDown / keyUp / flagsChanged`）。已有输入监控权限门禁，不新增权限。tap 创建失败时回退 `NSEvent.addGlobalMonitorForEvents`，诊断里标明来源（「CGEventTap / 回退 NSEvent / 无权限」）。
-- 不用 Accessibility：键盘的 NSEvent 全局监听要求 Accessibility，比输入监控更重，只在回退时接受。
+- 权限实测（[docs/input-permission-matrix.md](input-permission-matrix.md)）：鼠标的 NSEvent 全局监听零权限可用；键盘 tap 只需输入监控；NSEvent 键盘监听由**辅助功能**门控（只有输入监控时收不到 keyDown/keyUp），因此回退前先查 `AXIsProcessTrusted()`，没有辅助功能就不装假监听。辅助功能同时会让 `CGPreflightListenEventAccess()` 返回 true，是输入监控的超集。
 - 必须处理 `tapDisabledByTimeout` 与 `tapDisabledByUserInput`：收到后 `CGEvent.tapEnable(tap:enable:)` 重开，连续失败 3 次切回退并把原因写进诊断。
 - 隐私：每次事件先查 `IsSecureEventInputEnabled()`，为真则立即清空并暂停显示 1 秒。不落盘、不写日志、诊断只报「最近一次事件时间」。
 - 自动重复（按住不放）默认不重复显示，可切「每次重复都闪」。
@@ -273,7 +273,7 @@
 
 ## 开放问题（必须实机验证，不写结论）
 
-1. **全局鼠标监听到底需不需要授权**：ClickLight README 说点击检测需要 Accessibility；CursorFlow 宣称「不需要 Accessibility 也不需要 Input Monitoring」。本机 ClickBoom 用 `CGPreflightListenEventAccess`（输入监控）做门禁。三种说法互斥，必须在干净用户下实测「只授权 / 不授权」两种状态下点击是否被捕获，再决定键盘 HUD 的权限文案要不要拆分鼠标与键盘。
+1. ~~**全局鼠标监听到底需不需要授权**~~（2026-11-23 实测已解决）：ClickLight 说的 Accessibility 是 CGEventTap 点击检测的成本，CursorFlow 说的零权限对 NSEvent 全局监听成立。本机实测：无任何授权时 NSEvent 鼠标监听照常收事件，鼠标 tap 收不到；键盘 tap 只需输入监控，NSEvent 键盘监听反而要辅助功能。结论与矩阵见 [input-permission-matrix.md](input-permission-matrix.md)。
 2. **`CGEventTap` 在 Secure Event Input 下的具体回调**：文档没有保证 tap 一定收到 `tapDisabledByUserInput`，要在密码框里实测是否需要额外的 `IsSecureEventInputEnabled` 轮询兜底（当前方案是每次事件查，代价低）。
 3. **中文输入法下的 keyCode 语义**：`UCKeyTranslate` 在输入法激活时是否返回物理键字符，需要实测；若不稳定，退化为固定 QWERTY 表并在设置里说明。
 4. **键盘 HUD 的内存/唤醒成本**：tap 常驻与面板常驻都要 `sample` 对照，不能只凭「listenOnly 很轻」。
