@@ -144,7 +144,7 @@ if [[ "${PUBLISH:-0}" == "1" ]]; then
   fi
 
   if ! git ls-remote --tags --exit-code origin "$TAG" >/dev/null 2>&1; then
-    echo "    提示：远端还没有 $TAG，gh 会按当前分支 HEAD 创建标签。"
+    echo "    提示：远端还没有 ${TAG}，gh 会按当前分支 HEAD 创建标签。"
   fi
   if ! gh release view "$TAG" >/dev/null 2>&1; then
     if [[ -n "$NOTES_TO_USE" ]]; then

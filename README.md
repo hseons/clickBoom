@@ -252,6 +252,12 @@ scripts/release.sh          # 打包 DMG（通用二进制，可选签名/公证
 完整历史见 [CHANGELOG.md](CHANGELOG.md)，这里只保留最近的修复与版本。
 本轮实现范围、后续启动条件和验收范围见 [ROADMAP.md](ROADMAP.md)；1.12 的完整方案与交付回顾见 [docs/next-release-1.12.md](docs/next-release-1.12.md)，下一版（1.13 屏幕标注与预设分享）见 [docs/next-release-1.13.md](docs/next-release-1.13.md)。
 
+### 1.12.4
+
+- 修复毛笔拖尾整条消失：1.12.3 的分桶重构误删了 `drawBrushStroke` 调用，选毛笔时一条轨迹都不画
+- 补齐全局监听权限实测：鼠标 NSEvent 零权限可用，键盘 tap 只需输入监控，NSEvent 键盘由辅助功能门控；矩阵见 `docs/input-permission-matrix.md`
+- 键盘监听不再「假装成功」：tap 创建后校验 `CGEvent.tapIsEnabled`，NSEvent 回退先查辅助功能授权
+
 ### 1.12.3
 
 - 拖尾分桶渲染、面板 LazyVStack、滑杆 20Hz 节流，交互更跟手
