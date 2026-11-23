@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Carbon
 import Foundation
+import os
 
 /// 键盘事件源。
 ///
@@ -28,13 +29,28 @@ final class KeystrokeMonitor: ObservableObject {
         | (1 << CGEventType.keyUp.rawValue)
         | (1 << CGEventType.flagsChanged.rawValue)
 
+    private let log = Logger(subsystem: "mumu.AIGG.clickBoom", category: "keystroke")
+
     /// 启动监听；返回是否真的挂上了某个事件源。
+    ///
+    /// 没授权时直接返回 false，不去装 NSEvent 全局监听——那个 API 在未授权时
+    /// 仍会返回一个 token，看起来「监听成功」，其实一个事件都收不到。
     @discardableResult
     func start() -> Bool {
         guard !isRunning else { return true }
+        guard CGPreflightListenEventAccess() else {
+            log.info("start denied: no input monitoring")
+            return false
+        }
         isRunning = true
-        if installTap() { return true }
-        return installFallback()
+        if installTap() {
+            log.info("tap installed")
+            return true
+        }
+        log.error("tap create failed, falling back")
+        let ok = installFallback()
+        log.info("fallback=\(ok, privacy: .public)")
+        return ok
     }
 
     func stop() {
@@ -140,6 +156,7 @@ final class KeystrokeMonitor: ObservableObject {
             return
         }
         guard type == .keyDown else { return }
+        log.debug("key keyCode=\(keyCode, privacy: .public)")
         let modifiers = KeystrokeFormatting.modifierSymbols(
             control: flags.contains(.maskControl),
             option: flags.contains(.maskAlternate),

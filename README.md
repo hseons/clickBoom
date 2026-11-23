@@ -73,6 +73,8 @@
 
 点击、拖尾、聚光环和点击音效不需要任何权限，装好就能用。「输入监控」只在开启键盘 HUD 时才需要：系统设置 → 隐私与安全性 → 输入监控 → 勾选 ClickBoom。macOS 对这项授权只对新启动的进程生效，勾选后从面板点「重启 App」即可；从系统设置切回来时面板会自动复查状态。
 
+从 1.12.2 起安装包用固定证书签名，授权可以跨版本保留；更早的 ad-hoc 版本每更新一次都会被系统当成新 App，需要在输入监控列表里把旧的 ClickBoom 条目删掉再重新勾选一次。
+
 ## 📦 安装
 
 1. 到 [Releases](https://github.com/hseons/clickBoom/releases) 下载最新的 `ClickBoom-x.y.z.dmg`。
@@ -249,6 +251,12 @@ scripts/release.sh          # 打包 DMG（通用二进制，可选签名/公证
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)，这里只保留最近的修复与版本。
 本轮实现范围、后续启动条件和验收范围见 [ROADMAP.md](ROADMAP.md)；1.12 的完整方案与交付回顾见 [docs/next-release-1.12.md](docs/next-release-1.12.md)，下一版（1.13 屏幕标注与预设分享）见 [docs/next-release-1.13.md](docs/next-release-1.13.md)。
+
+### 1.12.2
+
+- 修复键盘 HUD 打开后按键没反应：没授权时会误判为「监听成功」，现在如实提示
+- HUD 卡片新增「监听中 / 兼容模式 / 未授权 / 待重启」状态行与「预览浮层」按钮
+- 发版改用稳定签名证书，系统授权不再随每次更新失效
 
 ### 1.12.1
 

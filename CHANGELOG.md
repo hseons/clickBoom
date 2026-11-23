@@ -2,6 +2,14 @@
 
 完整版本历史。README 只保留最近两个版本，更早的记录都在这里。
 
+## [1.12.2] - 2026-11-23
+
+- 修复键盘 HUD「打开了但按键没反应」：没有输入监控授权时，`NSEvent.addGlobalMonitorForEvents` 仍然会返回一个有效的 monitor token，代码看起来「监听成功」，其实一个事件都收不到。现在 `KeystrokeMonitor.start()` 先做 `CGPreflightListenEventAccess()`，没授权直接返回失败，不去装假监听，界面如实显示未授权。
+- 键盘 HUD 卡片新增状态行：监听中 / 兼容模式 / 未授权 / 已授权待重启；新增「预览浮层」按钮，可以先确认浮层本身能不能渲染，把「渲染问题」和「收不到事件」分开。
+- 新增启动诊断日志（subsystem `mumu.AIGG.clickBoom`，category `keystroke`）：记录输入监控授权状态、HUD 开关、事件 tap 是否安装成功、tap 失败与回退，方便远程排查。
+- 发版默认改用稳定签名证书（Apple Development）：ad-hoc 签名的 designated requirement 是 cdhash，每次构建都变，系统对输入监控的授权会随版本作废，表现就是「更新完又没反应、去设置里看还是勾着的」。换成固定证书后 DR 变成 `identifier + 证书`，授权跨版本保留；`scripts/release.sh` 找不到证书时自动退回 ad-hoc 并明确提示。
+- 145 个测试保持全绿。
+
 ## [1.12.1] - 2026-11-23
 
 - 修复：装上 1.12.0 后点击、拖尾、聚光环全部不出现。原因是运行状态把「输入监控」当成全局闸门——`RuntimeStatus.resolve` 只要发现 `CGPreflightListenEventAccess()` 为假就直接返回「需要授权」，鼠标特效一并被拦下；而 ad-hoc 签名每重新构建一次 cdhash 都变，系统里的旧授权对不上新二进制，于是升级后整机一点效果都没有。现在鼠标相关功能不再依赖任何系统权限，`RuntimeStatus` 里也移除了这个状态，授权只影响键盘 HUD 自己。

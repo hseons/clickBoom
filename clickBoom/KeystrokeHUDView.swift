@@ -202,6 +202,14 @@ final class KeystrokeHUDController: ObservableObject {
         }
     }
 
+    /// 界面上「预览」按钮用：只验证浮层渲染，不依赖权限。
+    func preview() {
+        let state = AppState.shared
+        model.maxRows = max(state.keystrokeHUDLineCount, 1)
+        model.push("⌘⇧H")
+        showIfNeeded()
+    }
+
     private func handle(_ event: KeystrokeEvent) {
         guard isAllowed else { return }
         let state = AppState.shared

@@ -4,6 +4,7 @@ import CoreGraphics
 import ServiceManagement
 import Carbon
 import UniformTypeIdentifiers
+import os
 
 // MARK: - 点击效果样式
 enum EffectStyle: String, CaseIterable, Identifiable {
@@ -3014,7 +3015,18 @@ struct ControlPanelView: View {
                                     Label("当前使用兼容模式监听，部分按键（如功能键）可能不显示", systemImage: "info.circle")
                                         .font(.system(size: 11))
                                         .foregroundColor(.white.opacity(0.45))
+                                } else {
+                                    Label("监听中：按任意键试试", systemImage: "dot.radiowaves.left.and.right")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.mint)
                                 }
+
+                                Button("预览浮层") { keystrokeHUD.preview() }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                Text("只验证浮层能不能显示；没有授权时按键不会有反应。")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white.opacity(0.35))
                             }
                         }
 
@@ -3666,6 +3678,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         openPanelOnFirstLaunchIfNeeded()
         HotKeyManager.shared.sync()
         KeystrokeHUDController.shared.start()
+        startupLog.info("launch inputMonitoring=\(InputPermission.shared.isGranted, privacy: .public) hudEnabled=\(AppState.shared.keystrokeHUDEnabled, privacy: .public)")
         UpdateChecker.shared.checkIfDue()
     }
 
@@ -3696,6 +3709,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func screenParametersChanged() {
         layoutOverlay()
     }
+
+    private let startupLog = Logger(subsystem: "mumu.AIGG.clickBoom", category: "keystroke")
 
     private func layoutOverlay() {
         let frame = ScreenUnion.frame

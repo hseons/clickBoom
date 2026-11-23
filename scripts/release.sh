@@ -63,6 +63,24 @@ if [[ "${SKIP_SIGN:-0}" == "1" ]]; then
   )
 elif [[ -n "${SIGN_IDENTITY:-}" ]]; then
   BUILD_ARGS+=(CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$SIGN_IDENTITY" OTHER_CODE_SIGN_FLAGS="--timestamp")
+else
+  # 默认优先用稳定的签名身份（Apple Development 等），而不是 ad-hoc：
+  # ad-hoc 的 designated requirement 是 cdhash，每次重新构建都会变，
+  # 系统对「输入监控」「辅助功能」的授权会随版本作废，用户每次更新都得重新授权。
+  # 用固定证书后 DR 变成 identifier + 证书，授权可以跨版本保留。
+  AUTO_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development:.*\)"/\1/p' | head -1)"
+  if [[ -n "$AUTO_IDENTITY" ]]; then
+    echo "==> 签名身份：$AUTO_IDENTITY"
+    BUILD_ARGS+=(CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$AUTO_IDENTITY" OTHER_CODE_SIGN_FLAGS="--timestamp")
+  else
+    echo "==> 未找到稳定签名证书，退回 ad-hoc（每次更新都会丢失系统授权）"
+    BUILD_ARGS+=(
+      CODE_SIGN_STYLE=Manual
+      CODE_SIGN_IDENTITY=-
+      CODE_SIGNING_REQUIRED=YES
+      CODE_SIGNING_ALLOWED=YES
+    )
+  fi
 fi
 
 LOG="$DERIVED/xcodebuild.log"
