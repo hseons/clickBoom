@@ -13,6 +13,8 @@ nonisolated struct SettingsBackup: Codable, Equatable {
     var quietHoursEnabled: Bool?
     var quietHoursStartMinutes: Int?
     var quietHoursEndMinutes: Int?
+    /// 1.11 新增：生效的日子（周一 = bit 0），缺省沿用当前设置。
+    var quietHoursWeekdays: Int?
 
     init(
         schemaVersion: Int = SettingsBackupLogic.schemaVersion,
@@ -22,7 +24,8 @@ nonisolated struct SettingsBackup: Codable, Equatable {
         excludedApps: [ExcludedApp],
         quietHoursEnabled: Bool? = nil,
         quietHoursStartMinutes: Int? = nil,
-        quietHoursEndMinutes: Int? = nil
+        quietHoursEndMinutes: Int? = nil,
+        quietHoursWeekdays: Int? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.hotKeySpec = hotKeySpec
@@ -32,6 +35,7 @@ nonisolated struct SettingsBackup: Codable, Equatable {
         self.quietHoursEnabled = quietHoursEnabled
         self.quietHoursStartMinutes = quietHoursStartMinutes
         self.quietHoursEndMinutes = quietHoursEndMinutes
+        self.quietHoursWeekdays = quietHoursWeekdays
     }
 
     /// 把备份里的免打扰字段合进当前设置；旧备份缺少这些字段时保持当前值。
@@ -39,7 +43,8 @@ nonisolated struct SettingsBackup: Codable, Equatable {
         QuietHours(
             isEnabled: quietHoursEnabled ?? quietHours.isEnabled,
             startMinutes: quietHoursStartMinutes ?? quietHours.startMinutes,
-            endMinutes: quietHoursEndMinutes ?? quietHours.endMinutes
+            endMinutes: quietHoursEndMinutes ?? quietHours.endMinutes,
+            weekdayMask: quietHoursWeekdays ?? quietHours.weekdayMask
         )
     }
 }

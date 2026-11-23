@@ -164,3 +164,22 @@ final class FullScreenDetector {
         )
     }
 }
+
+/// 静止指针下的全屏复查节奏：有输入时保持 0.5 秒，长时间没有输入退到 2 秒。
+/// 退出全屏通常伴随应用激活、空间切换或系统唤醒，这几条路径都会立即刷新；
+/// 退避只影响「同一空间里指针静止」的兜底轮询，把空闲唤醒压到约四分之一。
+nonisolated enum FullScreenRecheckPolicy {
+    static let activeInterval: TimeInterval = 0.5
+    static let idleInterval: TimeInterval = 2.0
+    /// 连续 30 秒没有鼠标移动、按下或拖拽才退避，避免刚停下就漏掉恢复。
+    static let idleThreshold: TimeInterval = 30
+
+    static func interval(idleSeconds: TimeInterval) -> TimeInterval {
+        idleSeconds >= idleThreshold ? idleInterval : activeInterval
+    }
+
+    /// 复查间隔的人类可读描述，供运行诊断显示。
+    static func label(interval: TimeInterval) -> String {
+        interval >= idleInterval ? "2.0 秒（静止退避）" : "0.5 秒"
+    }
+}

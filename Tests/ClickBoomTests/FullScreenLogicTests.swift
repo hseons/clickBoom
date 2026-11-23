@@ -82,4 +82,16 @@ final class FullScreenLogicTests: XCTestCase {
         )
         XCTAssertEqual(lowered, CGRect(x: 10, y: 357, width: 800, height: 600))
     }
+
+    func testRecheckIntervalBacksOffOnlyAfterThirtyIdleSeconds() {
+        XCTAssertEqual(FullScreenRecheckPolicy.interval(idleSeconds: 0), 0.5)
+        XCTAssertEqual(FullScreenRecheckPolicy.interval(idleSeconds: 29.9), 0.5)
+        XCTAssertEqual(FullScreenRecheckPolicy.interval(idleSeconds: 30), 2.0)
+        XCTAssertEqual(FullScreenRecheckPolicy.interval(idleSeconds: 600), 2.0)
+    }
+
+    func testRecheckLabelDistinguishesIdleBackoff() {
+        XCTAssertEqual(FullScreenRecheckPolicy.label(interval: 0.5), "0.5 秒")
+        XCTAssertEqual(FullScreenRecheckPolicy.label(interval: 2.0), "2.0 秒（静止退避）")
+    }
 }

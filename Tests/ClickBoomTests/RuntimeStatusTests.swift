@@ -48,7 +48,7 @@ final class RuntimeStatusTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(resolve(), .quietHours(range: quiet.rangeLabel))
+        XCTAssertEqual(resolve(), .quietHours(schedule: quiet.scheduleLabel))
         XCTAssertEqual(resolve(enabled: false), .disabled)
         XCTAssertEqual(resolve(granted: false), .permissionRequired)
         XCTAssertEqual(resolve(paused: true), .paused)
@@ -56,6 +56,29 @@ final class RuntimeStatusTests: XCTestCase {
             resolve(quietHours: QuietHours(isEnabled: true, startMinutes: 600, endMinutes: 600)),
             .excluded(appName: "演示")
         )
+    }
+
+    func testSkippedQuietHoursFallsThroughToNextReason() {
+        let app = ExcludedApp(bundleID: "test.app", name: "演示")
+        let calendar = Calendar.current
+        let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 20, hour: 22, minute: 30))!
+        let quiet = QuietHours(isEnabled: true, startMinutes: 22 * 60, endMinutes: 8 * 60)
+
+        let skipped = RuntimeStatus.resolve(
+            isEnabled: true, hasPermission: true, isPaused: false,
+            quietHours: quiet, isQuietHoursSkipped: true, now: now,
+            excludedApp: nil, autoSilenceInFullScreen: false,
+            isFullScreen: false, appName: "前台 App"
+        )
+        XCTAssertEqual(skipped, .running)
+
+        let skippedButExcluded = RuntimeStatus.resolve(
+            isEnabled: true, hasPermission: true, isPaused: false,
+            quietHours: quiet, isQuietHoursSkipped: true, now: now,
+            excludedApp: app, autoSilenceInFullScreen: false,
+            isFullScreen: false, appName: app.name
+        )
+        XCTAssertEqual(skippedButExcluded, .excluded(appName: "演示"))
     }
 
     func testQuietHoursStopsAtEndMinute() {

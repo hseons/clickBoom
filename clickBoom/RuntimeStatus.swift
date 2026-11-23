@@ -5,7 +5,7 @@ nonisolated enum RuntimeStatus: Equatable {
     case disabled
     case permissionRequired
     case paused
-    case quietHours(range: String)
+    case quietHours(schedule: String)
     case excluded(appName: String)
     case fullScreen(appName: String)
     case running
@@ -15,6 +15,7 @@ nonisolated enum RuntimeStatus: Equatable {
         hasPermission: Bool,
         isPaused: Bool,
         quietHours: QuietHours = QuietHours(),
+        isQuietHoursSkipped: Bool = false,
         now: Date = Date(),
         excludedApp: ExcludedApp?,
         autoSilenceInFullScreen: Bool,
@@ -24,7 +25,9 @@ nonisolated enum RuntimeStatus: Equatable {
         if !isEnabled { return .disabled }
         if !hasPermission { return .permissionRequired }
         if isPaused { return .paused }
-        if quietHours.isActive(at: now) { return .quietHours(range: quietHours.rangeLabel) }
+        if !isQuietHoursSkipped, quietHours.isActive(at: now) {
+            return .quietHours(schedule: quietHours.scheduleLabel)
+        }
         if let excludedApp { return .excluded(appName: excludedApp.name) }
         if autoSilenceInFullScreen && isFullScreen { return .fullScreen(appName: appName) }
         return .running

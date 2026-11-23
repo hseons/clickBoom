@@ -336,6 +336,8 @@ class AppState: NSObject, ObservableObject {
         static let quietHoursEnabled = "quietHoursEnabled"
         static let quietHoursStart = "quietHoursStart"
         static let quietHoursEnd = "quietHoursEnd"
+        static let quietHoursWeekdays = "quietHoursWeekdays"
+        static let quietHoursSkipUntil = "quietHoursSkipUntil"
         static let savedPresets = "savedPresets"
         static let presetImportRecovery = "presetImportRecovery"
     }
@@ -459,6 +461,20 @@ class AppState: NSObject, ObservableObject {
     @Published var quietHoursEndMinutes: Int = QuietHours.defaultEndMinutes {
         didSet { defaults.set(quietHoursEndMinutes, forKey: Key.quietHoursEnd) }
     }
+    /// 免打扰生效的日子：位掩码，bit 0 = 周一 … bit 6 = 周日
+    @Published var quietHoursWeekdayMask: Int = QuietHours.everyDayMask {
+        didSet { defaults.set(quietHoursWeekdayMask, forKey: Key.quietHoursWeekdays) }
+    }
+    /// 「本次跳过」：临时放行到下一个边界，不改免打扰规则本身
+    @Published var quietHoursSkipUntil: Date? {
+        didSet {
+            if let quietHoursSkipUntil {
+                defaults.set(quietHoursSkipUntil, forKey: Key.quietHoursSkipUntil)
+            } else {
+                defaults.removeObject(forKey: Key.quietHoursSkipUntil)
+            }
+        }
+    }
     @Published var savedPresets: [PresetSnapshot] = [] {
         didSet {
             guard let data = try? JSONEncoder().encode(savedPresets) else { return }
@@ -543,6 +559,12 @@ class AppState: NSObject, ObservableObject {
         }
         if let value = d.object(forKey: Key.quietHoursEnd) as? NSNumber {
             quietHoursEndMinutes = value.intValue
+        }
+        if let value = d.object(forKey: Key.quietHoursWeekdays) as? NSNumber {
+            quietHoursWeekdayMask = value.intValue & QuietHours.everyDayMask
+        }
+        if let value = d.object(forKey: Key.quietHoursSkipUntil) as? Date {
+            quietHoursSkipUntil = value
         }
         if let data = d.data(forKey: Key.savedPresets),
            let decoded = try? JSONDecoder().decode([PresetSnapshot].self, from: data) {
@@ -925,8 +947,35 @@ class AppState: NSObject, ObservableObject {
         QuietHours(
             isEnabled: quietHoursEnabled,
             startMinutes: quietHoursStartMinutes,
-            endMinutes: quietHoursEndMinutes
+            endMinutes: quietHoursEndMinutes,
+            weekdayMask: quietHoursWeekdayMask
         )
+    }
+
+    /// 「本次跳过」只在时段生效、且没有尚未到期的跳过时可点。
+    @discardableResult
+    func skipQuietHoursOnce(at date: Date = Date()) -> Bool {
+        guard quietHours.isActive(at: date) else { return false }
+        if let until = quietHoursSkipUntil, until > date { return false }
+        guard let boundary = quietHours.nextBoundary(after: date) else { return false }
+        quietHoursSkipUntil = boundary
+        return true
+    }
+
+    /// 跳过是否仍然有效：时段结束、到期或规则被改过都不算。
+    func isQuietHoursSkipped(at date: Date = Date()) -> Bool {
+        guard let until = quietHoursSkipUntil else { return false }
+        return date < until && quietHours.isActive(at: date)
+    }
+
+    /// 规则一改，旧的跳过截止时间就没有意义了，直接作废。
+    func clearQuietHoursSkip() {
+        if quietHoursSkipUntil != nil { quietHoursSkipUntil = nil }
+    }
+
+    /// 到点后清掉过期的跳过记录，避免下次启动还带着旧的放行时间。
+    func clearExpiredQuietHoursSkip(at date: Date = Date()) {
+        if let until = quietHoursSkipUntil, until <= date { quietHoursSkipUntil = nil }
     }
 
     /// 导出设置备份：快捷键 + 排除列表 + 全屏静默 + 免打扰时段
@@ -938,7 +987,8 @@ class AppState: NSObject, ObservableObject {
             excludedApps: excludedApps,
             quietHoursEnabled: quietHoursEnabled,
             quietHoursStartMinutes: quietHoursStartMinutes,
-            quietHoursEndMinutes: quietHoursEndMinutes
+            quietHoursEndMinutes: quietHoursEndMinutes,
+            quietHoursWeekdays: quietHoursWeekdayMask
         )
     }
 
@@ -953,6 +1003,8 @@ class AppState: NSObject, ObservableObject {
         quietHoursEnabled = mergedQuietHours.isEnabled
         quietHoursStartMinutes = mergedQuietHours.startMinutes
         quietHoursEndMinutes = mergedQuietHours.endMinutes
+        quietHoursWeekdayMask = mergedQuietHours.weekdayMask
+        clearQuietHoursSkip()
         excludedApps = SettingsBackupLogic.mergingExclusions(backup.excludedApps)
         HotKeyManager.shared.sync()
     }
@@ -992,6 +1044,8 @@ class AppState: NSObject, ObservableObject {
         quietHoursEnabled = false
         quietHoursStartMinutes = QuietHours.defaultStartMinutes
         quietHoursEndMinutes = QuietHours.defaultEndMinutes
+        quietHoursWeekdayMask = QuietHours.everyDayMask
+        clearQuietHoursSkip()
         comboCount = 0
         HotKeyManager.shared.sync()
     }

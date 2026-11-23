@@ -65,4 +65,35 @@ final class SettingsBackupTests: XCTestCase {
         let decoded = try SettingsBackupLogic.decode(try SettingsBackupLogic.encode(backup))
         XCTAssertTrue(decoded.excludedApps.isEmpty)
     }
+
+    func testQuietHoursWeekdaysRoundTripAndApply() throws {
+        let backup = SettingsBackup(
+            hotKeySpec: HotKeySpec.default.storageValue,
+            hotKeyEnabled: true,
+            autoSilenceInFullScreen: true,
+            excludedApps: [],
+            quietHoursEnabled: true,
+            quietHoursStartMinutes: 22 * 60,
+            quietHoursEndMinutes: 8 * 60,
+            quietHoursWeekdays: QuietHours.weekdaysMask
+        )
+        let decoded = try SettingsBackupLogic.decode(try SettingsBackupLogic.encode(backup))
+        XCTAssertEqual(decoded.quietHoursWeekdays, QuietHours.weekdaysMask)
+
+        let merged = decoded.applyingQuietHours(to: QuietHours())
+        XCTAssertEqual(merged.weekdayMask, QuietHours.weekdaysMask)
+        XCTAssertEqual(merged.startMinutes, 22 * 60)
+        XCTAssertTrue(merged.isEnabled)
+    }
+
+    func testOldBackupWithoutWeekdaysKeepsCurrentMask() {
+        let current = QuietHours(isEnabled: true, weekdayMask: QuietHours.weekendMask)
+        let old = SettingsBackup(
+            hotKeySpec: HotKeySpec.default.storageValue,
+            hotKeyEnabled: true,
+            autoSilenceInFullScreen: true,
+            excludedApps: []
+        )
+        XCTAssertEqual(old.applyingQuietHours(to: current).weekdayMask, QuietHours.weekendMask)
+    }
 }

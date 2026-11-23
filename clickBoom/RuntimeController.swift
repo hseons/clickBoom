@@ -49,6 +49,7 @@ final class RuntimeController: ObservableObject {
     private var subscriptions: Set<AnyCancellable> = []
     private var spaceRefresh: Task<Void, Never>?
     private var fullScreenTimer: Timer?
+    private var fullScreenRecheckInterval: TimeInterval = 0
     private var quietHoursTimer: Timer?
     private var quietHoursBoundary: Date?
     private var started = false
@@ -99,6 +100,8 @@ final class RuntimeController: ObservableObject {
             state.$quietHoursEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$quietHoursStartMinutes.map { _ in () }.eraseToAnyPublisher(),
             state.$quietHoursEndMinutes.map { _ in () }.eraseToAnyPublisher(),
+            state.$quietHoursWeekdayMask.map { _ in () }.eraseToAnyPublisher(),
+            state.$quietHoursSkipUntil.map { _ in () }.eraseToAnyPublisher(),
             state.$clickTriggerMode.map { _ in () }.eraseToAnyPublisher(),
             state.$rightClickEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$trailEnabled.map { _ in () }.eraseToAnyPublisher(),
@@ -139,6 +142,8 @@ final class RuntimeController: ObservableObject {
     }
 
     func refresh(forceFullScreen: Bool = false, resetEffects: Bool = false) {
+        // 跳过到期后就地清掉，避免下次启动还带着一个过期的放行时间。
+        state.clearExpiredQuietHoursSkip(at: now())
         let snapshot = context(forceFullScreen)
         let excluded = snapshot.app.flatMap { app in
             AppExclusionLogic.isExcluded(bundleID: app.bundleID, in: state.excludedApps) ? app : nil
@@ -148,6 +153,7 @@ final class RuntimeController: ObservableObject {
             hasPermission: permission.isGranted,
             isPaused: state.isPaused,
             quietHours: state.quietHours,
+            isQuietHoursSkipped: state.isQuietHoursSkipped(at: now()),
             now: now(),
             excludedApp: excluded,
             autoSilenceInFullScreen: state.autoSilenceInFullScreen,
@@ -181,24 +187,64 @@ final class RuntimeController: ObservableObject {
         // 关闭、无权限、暂停或排除时停止检查。诊断面板不拥有此计时器。
         // 免打扰时段内不复查全屏：这段时间本来就不显示特效，时段结束时由边界计时器恢复。
         let inQuietHours = state.quietHours.isActive(at: now())
+            && !state.isQuietHoursSkipped(at: now())
         let needsFullScreenCheck = state.isEnabled && permission.isGranted && !state.isPaused
             && !inQuietHours
             && excluded == nil && snapshot.app != nil && state.autoSilenceInFullScreen
-        if started && needsFullScreenCheck && fullScreenTimer == nil {
-            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.permission.refresh()
-                    self?.refresh(forceFullScreen: true)
-                }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            fullScreenTimer = timer
-        } else if !needsFullScreenCheck {
-            fullScreenTimer?.invalidate()
-            fullScreenTimer = nil
-        }
+        syncFullScreenTimer(needed: needsFullScreenCheck)
 
         syncQuietHoursTimer()
+    }
+
+    /// 「本次跳过」：放行当前免打扰时段，到下一个边界自动恢复规则。
+    @discardableResult
+    func skipQuietHoursOnce() -> Bool {
+        guard state.skipQuietHoursOnce(at: now()) else { return false }
+        refresh(forceFullScreen: true, resetEffects: true)
+        return true
+    }
+
+    /// 全屏复查按有没有输入换挡：连续静止 30 秒后从 0.5 秒退到 2 秒，
+    /// 指针一动就回到 0.5 秒。计时器本身不重建，只在间隔变化时换一个。
+    private func syncFullScreenTimer(needed: Bool) {
+        guard started, needed else {
+            fullScreenTimer?.invalidate()
+            fullScreenTimer = nil
+            fullScreenRecheckInterval = 0
+            return
+        }
+        let desired = FullScreenRecheckPolicy.interval(idleSeconds: recentInputIdleSeconds())
+        guard fullScreenTimer == nil || abs(desired - fullScreenRecheckInterval) > 0.001 else { return }
+        fullScreenTimer?.invalidate()
+        let timer = Timer(timeInterval: desired, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.fullScreenTick()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fullScreenTimer = timer
+        fullScreenRecheckInterval = desired
+    }
+
+    private func fullScreenTick() {
+        let desired = FullScreenRecheckPolicy.interval(idleSeconds: recentInputIdleSeconds())
+        if abs(desired - fullScreenRecheckInterval) > 0.001 {
+            syncFullScreenTimer(needed: true)
+        }
+        permission.refresh()
+        refresh(forceFullScreen: true)
+    }
+
+    /// 鼠标最近一次移动、按下或拖拽距今多少秒；键盘和触控板事件不计入。
+    private func recentInputIdleSeconds() -> TimeInterval {
+        let source = CGEventSourceStateID.combinedSessionState
+        let idle = [
+            CGEventSource.secondsSinceLastEventType(source, eventType: .mouseMoved),
+            CGEventSource.secondsSinceLastEventType(source, eventType: .leftMouseDown),
+            CGEventSource.secondsSinceLastEventType(source, eventType: .leftMouseDragged),
+            CGEventSource.secondsSinceLastEventType(source, eventType: .rightMouseDown)
+        ]
+        return idle.min() ?? 0
     }
 
     /// 免打扰只安排下一次边界的一次性计时器，平时不轮询；系统唤醒和设置变化都会重建。
@@ -251,9 +297,7 @@ final class RuntimeController: ObservableObject {
             status: status.title,
             permissionGranted: permission.isGranted,
             appName: targetApp?.name ?? "暂无外部应用",
-            quietHours: state.quietHours.isEnabled
-                ? "\(state.quietHours.rangeLabel)\(state.quietHours.isActive(at: now()) ? "（生效中）" : "")"
-                : "未开启",
+            quietHours: quietHoursSummary,
             bundleID: targetApp?.bundleID ?? "—",
             screenCount: context(false).screenCount,
             motionActive: monitor?.hasMotionMonitor == true,
@@ -261,8 +305,22 @@ final class RuntimeController: ObservableObject {
             trailPointCount: engine.trailPoints.count,
             performanceTier: tierText,
             frameCost: frameCost + stallText,
-            budgetLimits: budgetText
+            budgetLimits: budgetText,
+            fullScreenRecheck: fullScreenRecheckSummary
         )
+    }
+
+    /// 复查间隔只在计时器运行时才有意义；打开诊断时顺带说明是否已退避。
+    private var fullScreenRecheckSummary: String {
+        guard fullScreenTimer != nil else { return "未运行" }
+        return FullScreenRecheckPolicy.label(interval: fullScreenRecheckInterval)
+    }
+
+    private var quietHoursSummary: String {
+        guard state.quietHours.isEnabled else { return "未开启" }
+        let text = state.quietHours.scheduleLabel
+        guard state.quietHours.isActive(at: now()) else { return text }
+        return text + (state.isQuietHoursSkipped(at: now()) ? "（本次已跳过）" : "（生效中）")
     }
 
     func stop() {
@@ -294,4 +352,5 @@ struct RuntimeDiagnostics {
     let performanceTier: String
     let frameCost: String
     let budgetLimits: String
+    let fullScreenRecheck: String
 }

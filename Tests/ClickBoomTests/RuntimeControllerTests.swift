@@ -272,7 +272,7 @@ final class RuntimeControllerTests: XCTestCase {
 
         engine.trigger(at: CGPoint(x: 1, y: 1))
         runtime.refresh()
-        XCTAssertEqual(runtime.status, .quietHours(range: "22:00 – 次日 08:00"))
+        XCTAssertEqual(runtime.status, .quietHours(schedule: "每天 22:00 – 次日 08:00"))
         XCTAssertTrue(engine.particles.isEmpty)
         XCTAssertTrue(engine.trailPoints.isEmpty)
 
@@ -282,5 +282,93 @@ final class RuntimeControllerTests: XCTestCase {
         runtime.refresh()
         XCTAssertEqual(runtime.status, .running)
         XCTAssertEqual(engine.pointerPosition, CGPoint(x: 40, y: 50))
+    }
+
+    @MainActor
+    func testSkipQuietHoursOnceRestoresUntilBoundaryThenClears() {
+        let suite = "ClickBoomTests.Runtime.Skip.\\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let state = AppState(defaults: defaults)
+        state.autoSilenceInFullScreen = false
+        state.trailEnabled = true
+        state.quietHoursEnabled = true
+        state.quietHoursStartMinutes = 22 * 60
+        state.quietHoursEndMinutes = 8 * 60
+        let engine = EffectEngine(state: state)
+        let calendar = Calendar.current
+        var current = calendar.date(
+            from: DateComponents(year: 2026, month: 11, day: 20, hour: 22, minute: 30)
+        )!
+        let runtime = RuntimeController(
+            state: state,
+            permission: InputPermission(checkAccess: { true }),
+            engine: engine,
+            monitor: nil,
+            context: { _ in RuntimeContext(app: nil, isFullScreen: false, screenCount: 1) },
+            pointer: { CGPoint(x: 40, y: 50) },
+            now: { current }
+        )
+        defer { runtime.stop(); state.resume() }
+
+        runtime.refresh()
+        XCTAssertEqual(runtime.status, .quietHours(schedule: state.quietHours.scheduleLabel))
+        XCTAssertTrue(runtime.skipQuietHoursOnce())
+        XCTAssertEqual(state.quietHoursSkipUntil,
+                       calendar.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 8, minute: 0)))
+        XCTAssertEqual(runtime.status, .running)
+        XCTAssertEqual(engine.pointerPosition, CGPoint(x: 40, y: 50))
+
+        // 同一个时段里再点一次不再重复设置，仍保持放行。
+        XCTAssertFalse(runtime.skipQuietHoursOnce())
+        current = calendar.date(
+            from: DateComponents(year: 2026, month: 11, day: 21, hour: 3, minute: 0)
+        )!
+        runtime.refresh()
+        XCTAssertEqual(runtime.status, .running)
+
+        // 到结束边界后跳过记录自动清掉，下一次时段照常静默。
+        current = calendar.date(
+            from: DateComponents(year: 2026, month: 11, day: 21, hour: 8, minute: 0)
+        )!
+        runtime.refresh()
+        XCTAssertNil(state.quietHoursSkipUntil)
+        current = calendar.date(
+            from: DateComponents(year: 2026, month: 11, day: 21, hour: 22, minute: 10)
+        )!
+        runtime.refresh()
+        XCTAssertEqual(runtime.status, .quietHours(schedule: state.quietHours.scheduleLabel))
+    }
+
+    @MainActor
+    func testSkipQuietHoursOnlyWorksInsideActiveWindowAndPersists() {
+        let suite = "ClickBoomTests.Runtime.SkipPersist.\\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let state = AppState(defaults: defaults)
+        state.quietHoursEnabled = true
+        state.quietHoursStartMinutes = 22 * 60
+        state.quietHoursEndMinutes = 8 * 60
+        state.quietHoursWeekdayMask = QuietHours.weekdaysMask
+
+        let noon = Calendar.current.date(
+            from: DateComponents(year: 2026, month: 11, day: 20, hour: 12, minute: 0)
+        )!
+        XCTAssertFalse(state.skipQuietHoursOnce(at: noon))
+
+        let night = Calendar.current.date(
+            from: DateComponents(year: 2026, month: 11, day: 20, hour: 23, minute: 0)
+        )!
+        XCTAssertTrue(state.skipQuietHoursOnce(at: night))
+        XCTAssertEqual(state.quietHoursWeekdayMask, QuietHours.weekdaysMask)
+        XCTAssertNotNil(defaults.object(forKey: "quietHoursWeekdays"))
+        XCTAssertNotNil(defaults.object(forKey: "quietHoursSkipUntil"))
+
+        let reloaded = AppState(defaults: defaults)
+        XCTAssertEqual(reloaded.quietHoursWeekdayMask, QuietHours.weekdaysMask)
+        XCTAssertEqual(reloaded.quietHoursSkipUntil, state.quietHoursSkipUntil)
+        reloaded.clearQuietHoursSkip()
+        XCTAssertNil(reloaded.quietHoursSkipUntil)
+        XCTAssertNil(defaults.object(forKey: "quietHoursSkipUntil"))
     }
 }

@@ -19,6 +19,12 @@ struct RuntimeStatusView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if case .quietHours = runtime.status, !state.isQuietHoursSkipped(at: Date()) {
+                    Button("本次跳过") { runtime.skipQuietHoursOnce() }
+                        .buttonStyle(.link)
+                        .font(.system(size: 10))
+                        .help("只跳过这一次免打扰，到结束边界后自动恢复规则")
+                }
             }
             Spacer(minLength: 4)
             if let actionTitle {
@@ -61,7 +67,7 @@ struct RuntimeStatusView: View {
         case .disabled: return "打开总开关后恢复全局特效；预览仍可使用。"
         case .permissionRequired: return "在系统设置中开启输入监控，授权后自动生效。"
         case .paused: return state.pauseRemainingText
-        case .quietHours(let range): return "每天 \(range) 自动静默，结束时间到点恢复；预览仍可使用。"
+        case .quietHours(let schedule): return "\(schedule) 自动静默，结束边界恢复；预览仍可使用。"
         case .excluded: return "切换到其他应用时自动恢复；预览仍可使用。"
         case .fullScreen: return "退出全屏时自动恢复；预览仍可使用。"
         case .running:
@@ -123,6 +129,7 @@ struct RuntimeDiagnosticsView: View {
                     row("性能档位", snapshot.performanceTier)
                     row("帧绘制耗时", snapshot.frameCost)
                     row("预算上限", snapshot.budgetLimits)
+                    row("全屏复查", snapshot.fullScreenRecheck)
                 }
                 Text("读取时间：\(snapshot.capturedAt.formatted(date: .omitted, time: .standard))")
                     .font(.caption2)
