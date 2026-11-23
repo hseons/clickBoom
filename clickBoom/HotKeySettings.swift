@@ -25,6 +25,12 @@ struct HotKeySpec: Equatable {
         modifiers: UInt32(controlKey | optionKey)
     )
 
+    /// 演示模式默认 ⌃⌥P。
+    nonisolated static let presentationDefault = HotKeySpec(
+        keyCode: UInt32(kVK_ANSI_P),
+        modifiers: UInt32(controlKey | optionKey)
+    )
+
     /// 是否是可以注册的组合：带 ⌃ / ⌥ / ⌘ 之一，且键码不是纯修饰键。
     nonisolated var isValid: Bool {
         modifiers & Self.requiredModifiers != 0
@@ -140,6 +146,21 @@ struct HotKeySpec: Equatable {
         case kVK_F11: return "F11"
         case kVK_F12: return "F12"
         default: return "键码 \(keyCode)"
+        }
+    }
+}
+
+/// 全局快捷键的槽位。rawValue 直接作为 Carbon 的 hot key id，新增槽位不能复用旧值。
+nonisolated enum HotKeySlot: UInt32, CaseIterable, Identifiable {
+    case toggle = 1
+    case presentation = 2
+
+    var id: UInt32 { rawValue }
+
+    var title: String {
+        switch self {
+        case .toggle: return "开关特效"
+        case .presentation: return "演示模式"
         }
     }
 }

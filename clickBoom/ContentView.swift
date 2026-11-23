@@ -340,6 +340,16 @@ class AppState: NSObject, ObservableObject {
         static let quietHoursSkipUntil = "quietHoursSkipUntil"
         static let savedPresets = "savedPresets"
         static let presetImportRecovery = "presetImportRecovery"
+        static let appRules = "appRules"
+        static let clickSoundEnabled = "clickSoundEnabled"
+        static let clickSoundStyleRaw = "clickSoundStyle"
+        static let clickSoundVolume = "clickSoundVolume"
+        static let keystrokeHUDEnabled = "keystrokeHUDEnabled"
+        static let keystrokeHUDSize = "keystrokeHUDSize"
+        static let keystrokeHUDLineCount = "keystrokeHUDLineCount"
+        static let keystrokeHUDShowShortcutsOnly = "keystrokeHUDShowShortcutsOnly"
+        static let presentationHotKeySpec = "presentationHotKeySpec"
+        static let presentationHotkeyEnabled = "presentationHotkeyEnabled"
     }
 
     private let defaults: UserDefaults
@@ -482,9 +492,55 @@ class AppState: NSObject, ObservableObject {
         }
     }
 
+    /// 按应用规则（1.12）：静默 / 套用某个预设 / 关拖尾 / 键盘 HUD 是否显示。
+    /// 规则是权威数据，excludedApps 由它派生，保证旧逻辑和旧备份继续可用。
+    @Published var appRules: [AppRule] = [] {
+        didSet {
+            guard let data = try? JSONEncoder().encode(appRules) else { return }
+            defaults.set(data, forKey: Key.appRules)
+            syncExcludedAppsFromRules()
+        }
+    }
+    /// 点击音效：走系统输出，系统录屏默认不收录（需要虚拟声卡）。
+    @Published var clickSoundEnabled: Bool = false {
+        didSet { defaults.set(clickSoundEnabled, forKey: Key.clickSoundEnabled) }
+    }
+    @Published var clickSoundStyleRaw: String = ClickSoundStyle.click.rawValue {
+        didSet { defaults.set(clickSoundStyleRaw, forKey: Key.clickSoundStyleRaw) }
+    }
+    @Published var clickSoundVolume: Double = ClickSoundLogic.defaultVolume {
+        didSet { defaults.set(clickSoundVolume, forKey: Key.clickSoundVolume) }
+    }
+    /// 键盘与快捷键 HUD（1.12）
+    @Published var keystrokeHUDEnabled: Bool = false {
+        didSet { defaults.set(keystrokeHUDEnabled, forKey: Key.keystrokeHUDEnabled) }
+    }
+    @Published var keystrokeHUDSizeRaw: Int = KeystrokeHUDSize.medium.rawValue {
+        didSet { defaults.set(keystrokeHUDSizeRaw, forKey: Key.keystrokeHUDSize) }
+    }
+    @Published var keystrokeHUDLineCount: Int = 2 {
+        didSet { defaults.set(keystrokeHUDLineCount, forKey: Key.keystrokeHUDLineCount) }
+    }
+    @Published var keystrokeHUDShowShortcutsOnly: Bool = false {
+        didSet { defaults.set(keystrokeHUDShowShortcutsOnly, forKey: Key.keystrokeHUDShowShortcutsOnly) }
+    }
+    /// 演示模式快捷键，默认 ⌃⌥P
+    @Published var presentationHotKeySpec: HotKeySpec = .presentationDefault {
+        didSet { defaults.set(presentationHotKeySpec.storageValue, forKey: Key.presentationHotKeySpec) }
+    }
+    @Published var presentationHotkeyEnabled: Bool = true {
+        didSet { defaults.set(presentationHotkeyEnabled, forKey: Key.presentationHotkeyEnabled) }
+    }
+
     @Published private var presetImportRecovery: PresetImportRecovery?
 
     @Published var comboCount: Int = 0
+
+    /// 演示模式（1.12）：临时跳过全屏静默与免打扰，退出后原样恢复。不写入 UserDefaults。
+    @Published private(set) var isPresentationMode = false
+    private var presentationSnapshot: PresentationSnapshot?
+    /// 当前前台应用被规则要求关拖尾；由 RuntimeController 维护，不持久化。
+    var trailSuppressedForCurrentApp = false
 
     /// 暂停状态的剩余时间；由暂停计时器刷新，用来驱动菜单栏和面板上的倒计时
     @Published private(set) var pauseUntil: Date?
@@ -548,6 +604,37 @@ class AppState: NSObject, ObservableObject {
            let decoded = try? JSONDecoder().decode([ExcludedApp].self, from: data) {
             excludedApps = decoded
         }
+        if let data = d.data(forKey: Key.appRules),
+           let decoded = try? JSONDecoder().decode([AppRule].self, from: data) {
+            appRules = decoded
+        }
+        // 1.11 及更早只存了排除列表：首次升级时把它转成「整应用静默」规则。
+        if appRules.isEmpty, !excludedApps.isEmpty {
+            appRules = AppRuleLogic.rules(from: excludedApps)
+        }
+        if let value = d.object(forKey: Key.clickSoundEnabled) as? Bool { clickSoundEnabled = value }
+        if let value = d.string(forKey: Key.clickSoundStyleRaw), ClickSoundStyle(rawValue: value) != nil {
+            clickSoundStyleRaw = value
+        }
+        if let value = d.object(forKey: Key.clickSoundVolume) as? NSNumber {
+            clickSoundVolume = min(max(value.doubleValue, 0), 1)
+        }
+        if let value = d.object(forKey: Key.keystrokeHUDEnabled) as? Bool { keystrokeHUDEnabled = value }
+        if let value = d.object(forKey: Key.keystrokeHUDSize) as? NSNumber {
+            keystrokeHUDSizeRaw = min(max(value.intValue, 0), 2)
+        }
+        if let value = d.object(forKey: Key.keystrokeHUDLineCount) as? NSNumber {
+            keystrokeHUDLineCount = min(max(value.intValue, 1), 3)
+        }
+        if let value = d.object(forKey: Key.keystrokeHUDShowShortcutsOnly) as? Bool {
+            keystrokeHUDShowShortcutsOnly = value
+        }
+        if let value = HotKeySpec(storageValue: d.string(forKey: Key.presentationHotKeySpec)) {
+            presentationHotKeySpec = value
+        }
+        if let value = d.object(forKey: Key.presentationHotkeyEnabled) as? Bool {
+            presentationHotkeyEnabled = value
+        }
         if let value = d.object(forKey: Key.autoSilenceInFullScreen) as? Bool {
             autoSilenceInFullScreen = value
         }
@@ -591,6 +678,19 @@ class AppState: NSObject, ObservableObject {
 
     var trailTriggerMode: TrailTriggerMode {
         TrailTriggerMode(rawValue: trailTriggerModeRaw) ?? .always
+    }
+
+    var clickSoundStyle: ClickSoundStyle {
+        ClickSoundStyle(rawValue: clickSoundStyleRaw) ?? .click
+    }
+
+    var keystrokeHUDSize: KeystrokeHUDSize {
+        KeystrokeHUDSize(rawValue: keystrokeHUDSizeRaw) ?? .medium
+    }
+
+    /// 拖尾是否真正生效：全局开关打开，且当前应用规则没有把它关掉。
+    var isTrailActive: Bool {
+        trailEnabled && !trailSuppressedForCurrentApp
     }
 
     var trailColor: Color {
@@ -942,6 +1042,77 @@ class AppState: NSObject, ObservableObject {
         excludedApps = AppExclusionLogic.removing(app, from: excludedApps)
     }
 
+    /// 规则是权威数据，排除列表只是它的派生视图——旧逻辑、旧备份和导入都继续读 excludedApps。
+    private func syncExcludedAppsFromRules() {
+        let derived = AppRuleLogic.exclusions(from: appRules)
+        if derived != excludedApps {
+            excludedApps = derived
+        }
+    }
+
+    /// 加入（或覆盖）一条 App 规则；返回是否真的发生了变化。
+    @discardableResult
+    func addAppRule(_ rule: AppRule) -> Bool {
+        let updated = AppRuleLogic.adding(rule, to: appRules)
+        guard updated != appRules else { return false }
+        appRules = updated
+        return true
+    }
+
+    func removeAppRule(bundleID: String) {
+        appRules = AppRuleLogic.removing(bundleID: bundleID, from: appRules)
+    }
+
+    func updateAppRule(_ rule: AppRule) {
+        appRules = AppRuleLogic.updating(rule, in: appRules)
+    }
+
+    func appRule(for bundleID: String?) -> AppRule? {
+        AppRuleLogic.resolving(bundleID: bundleID, in: appRules)
+    }
+
+    /// 演示模式：进入时把会被改动的设置拍个快照，退出时逐项还原。
+    func togglePresentationMode() {
+        if isPresentationMode {
+            exitPresentationMode()
+        } else {
+            enterPresentationMode()
+        }
+    }
+
+    func enterPresentationMode() {
+        guard !isPresentationMode else { return }
+        presentationSnapshot = PresentationSnapshot(
+            autoSilenceInFullScreen: autoSilenceInFullScreen,
+            quietHoursEnabled: quietHoursEnabled,
+            quietHoursStartMinutes: quietHoursStartMinutes,
+            quietHoursEndMinutes: quietHoursEndMinutes,
+            quietHoursWeekdayMask: quietHoursWeekdayMask,
+            spotlightEnabled: spotlightEnabled,
+            keystrokeHUDEnabled: keystrokeHUDEnabled
+        )
+        isPresentationMode = true
+        autoSilenceInFullScreen = false
+        quietHoursEnabled = false
+        spotlightEnabled = true
+        keystrokeHUDEnabled = true
+    }
+
+    func exitPresentationMode() {
+        guard isPresentationMode else { return }
+        isPresentationMode = false
+        if let snapshot = presentationSnapshot {
+            autoSilenceInFullScreen = snapshot.autoSilenceInFullScreen
+            quietHoursEnabled = snapshot.quietHoursEnabled
+            quietHoursStartMinutes = snapshot.quietHoursStartMinutes
+            quietHoursEndMinutes = snapshot.quietHoursEndMinutes
+            quietHoursWeekdayMask = snapshot.quietHoursWeekdayMask
+            spotlightEnabled = snapshot.spotlightEnabled
+            keystrokeHUDEnabled = snapshot.keystrokeHUDEnabled
+        }
+        presentationSnapshot = nil
+    }
+
     /// 当前生效的免打扰规则；面板、诊断和运行时都读这一份。
     var quietHours: QuietHours {
         QuietHours(
@@ -988,7 +1159,17 @@ class AppState: NSObject, ObservableObject {
             quietHoursEnabled: quietHoursEnabled,
             quietHoursStartMinutes: quietHoursStartMinutes,
             quietHoursEndMinutes: quietHoursEndMinutes,
-            quietHoursWeekdays: quietHoursWeekdayMask
+            quietHoursWeekdays: quietHoursWeekdayMask,
+            appRules: appRules,
+            presentationHotKeySpec: presentationHotKeySpec.storageValue,
+            presentationHotkeyEnabled: presentationHotkeyEnabled,
+            clickSoundEnabled: clickSoundEnabled,
+            clickSoundStyle: clickSoundStyleRaw,
+            clickSoundVolume: clickSoundVolume,
+            keystrokeHUDEnabled: keystrokeHUDEnabled,
+            keystrokeHUDSize: keystrokeHUDSizeRaw,
+            keystrokeHUDLineCount: keystrokeHUDLineCount,
+            keystrokeHUDShowShortcutsOnly: keystrokeHUDShowShortcutsOnly
         )
     }
 
@@ -1005,7 +1186,31 @@ class AppState: NSObject, ObservableObject {
         quietHoursEndMinutes = mergedQuietHours.endMinutes
         quietHoursWeekdayMask = mergedQuietHours.weekdayMask
         clearQuietHoursSkip()
-        excludedApps = SettingsBackupLogic.mergingExclusions(backup.excludedApps)
+        // 规则优先：v2 备份带 appRules；只有旧备份才退回排除列表。
+        appRules = SettingsBackupLogic.rules(from: backup)
+        if let spec = HotKeySpec(storageValue: backup.presentationHotKeySpec ?? ""), spec.isValid {
+            presentationHotKeySpec = spec
+        }
+        if let enabled = backup.presentationHotkeyEnabled {
+            presentationHotkeyEnabled = enabled
+        }
+        if let enabled = backup.clickSoundEnabled { clickSoundEnabled = enabled }
+        if let style = backup.clickSoundStyle, ClickSoundStyle(rawValue: style) != nil {
+            clickSoundStyleRaw = style
+        }
+        if let volume = backup.clickSoundVolume {
+            clickSoundVolume = min(max(volume, 0), 1)
+        }
+        if let enabled = backup.keystrokeHUDEnabled { keystrokeHUDEnabled = enabled }
+        if let size = backup.keystrokeHUDSize {
+            keystrokeHUDSizeRaw = min(max(size, 0), 2)
+        }
+        if let lines = backup.keystrokeHUDLineCount {
+            keystrokeHUDLineCount = min(max(lines, 1), 3)
+        }
+        if let shortcutsOnly = backup.keystrokeHUDShowShortcutsOnly {
+            keystrokeHUDShowShortcutsOnly = shortcutsOnly
+        }
         HotKeyManager.shared.sync()
     }
 
@@ -1039,6 +1244,8 @@ class AppState: NSObject, ObservableObject {
         clickTriggerMode = .singleClick
         rightClickEnabled = true
         hotKeySpec = .default
+        presentationHotKeySpec = .presentationDefault
+        appRules = []
         excludedApps = []
         autoSilenceInFullScreen = true
         quietHoursEnabled = false
@@ -1058,10 +1265,12 @@ class AppState: NSObject, ObservableObject {
 final class HotKeyManager: ObservableObject {
     static let shared = HotKeyManager()
 
+    /// 只为「开关特效」保留的兼容字段；多槽位统一看 isRegistered(_:)。
     @Published private(set) var isRegistered = false
 
-    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyRefs: [HotKeySlot: EventHotKeyRef] = [:]
     private var handlerRef: EventHandlerRef?
+    private var registeredSlots: Set<HotKeySlot> = []
 
     var spec: HotKeySpec {
         AppState.shared.hotKeySpec
@@ -1071,55 +1280,88 @@ final class HotKeyManager: ObservableObject {
         spec.label
     }
 
+    func spec(for slot: HotKeySlot) -> HotKeySpec {
+        switch slot {
+        case .toggle: return AppState.shared.hotKeySpec
+        case .presentation: return AppState.shared.presentationHotKeySpec
+        }
+    }
+
+    func isEnabled(_ slot: HotKeySlot) -> Bool {
+        switch slot {
+        case .toggle: return AppState.shared.hotkeyEnabled
+        case .presentation: return AppState.shared.presentationHotkeyEnabled
+        }
+    }
+
+    func isRegistered(_ slot: HotKeySlot) -> Bool {
+        registeredSlots.contains(slot)
+    }
+
     func sync() {
         unregister()
-        guard AppState.shared.hotkeyEnabled else { return }
+        guard HotKeySlot.allCases.contains(where: { isEnabled($0) }) else { return }
         installHandlerIfNeeded()
-
-        guard let ref = register(spec) else {
-            // 常见原因：和系统或其他 App 已有的全局快捷键冲突
-            isRegistered = false
-            return
+        for slot in HotKeySlot.allCases where isEnabled(slot) {
+            registerSlot(slot, spec: spec(for: slot))
         }
-        hotKeyRef = ref
-        isRegistered = true
     }
 
     /// 录制完成或恢复默认时调用：保存组合并立即按新组合注册。
-    func apply(_ spec: HotKeySpec) {
+    func apply(_ spec: HotKeySpec, for slot: HotKeySlot = .toggle) {
         guard spec.isValid else { return }
-        AppState.shared.hotKeySpec = spec
-        AppState.shared.hotkeyEnabled = true
+        store(spec, for: slot)
         sync()
     }
 
     /// 录制完成时用：先探测组合能否注册成功，成功才保存。
     /// 失败时恢复原组合并返回 false，避免用户选到被占用的组合后快捷键彻底失效。
     @discardableResult
-    func applyProbed(_ spec: HotKeySpec) -> Bool {
+    func applyProbed(_ spec: HotKeySpec, for slot: HotKeySlot = .toggle) -> Bool {
         guard spec.isValid else { return false }
-        let previous = AppState.shared.hotKeySpec
+        let previous = self.spec(for: slot)
 
-        unregister()
-        if let ref = register(spec) {
-            installHandlerIfNeeded()
-            hotKeyRef = ref
-            isRegistered = true
-            AppState.shared.hotKeySpec = spec
-            AppState.shared.hotkeyEnabled = true
+        unregister(slot)
+        installHandlerIfNeeded()
+        if registerSlot(slot, spec: spec) {
+            store(spec, for: slot)
             return true
         }
 
         // 被占用：保留原组合，重新注册回去
-        AppState.shared.hotKeySpec = previous
+        store(previous, for: slot)
         sync()
         return false
     }
 
+    private func store(_ spec: HotKeySpec, for slot: HotKeySlot) {
+        switch slot {
+        case .toggle:
+            AppState.shared.hotKeySpec = spec
+            AppState.shared.hotkeyEnabled = true
+        case .presentation:
+            AppState.shared.presentationHotKeySpec = spec
+            AppState.shared.presentationHotkeyEnabled = true
+        }
+    }
+
+    @discardableResult
+    private func registerSlot(_ slot: HotKeySlot, spec: HotKeySpec) -> Bool {
+        guard let ref = register(spec, slot: slot) else {
+            registeredSlots.remove(slot)
+            if slot == .toggle { isRegistered = false }
+            return false
+        }
+        hotKeyRefs[slot] = ref
+        registeredSlots.insert(slot)
+        if slot == .toggle { isRegistered = true }
+        return true
+    }
+
     /// 只尝试注册，不改任何状态；冲突时返回 nil。
-    private func register(_ spec: HotKeySpec) -> EventHotKeyRef? {
+    private func register(_ spec: HotKeySpec, slot: HotKeySlot) -> EventHotKeyRef? {
         var ref: EventHotKeyRef?
-        let hotKeyID = EventHotKeyID(signature: OSType(0x434C_4B42), id: 1)
+        let hotKeyID = EventHotKeyID(signature: OSType(0x434C_4B42), id: slot.rawValue)
         let status = RegisterEventHotKey(
             spec.keyCode,
             spec.modifiers,
@@ -1131,15 +1373,27 @@ final class HotKeyManager: ObservableObject {
         return status == noErr ? ref : nil
     }
 
-    func resetToDefault() {
-        apply(.default)
+    func resetToDefault(for slot: HotKeySlot = .toggle) {
+        switch slot {
+        case .toggle: apply(.default, for: slot)
+        case .presentation: apply(.presentationDefault, for: slot)
+        }
+    }
+
+    func unregister(_ slot: HotKeySlot) {
+        if let ref = hotKeyRefs.removeValue(forKey: slot) {
+            UnregisterEventHotKey(ref)
+        }
+        registeredSlots.remove(slot)
+        if slot == .toggle { isRegistered = false }
     }
 
     func unregister() {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
+        for ref in hotKeyRefs.values {
+            UnregisterEventHotKey(ref)
         }
-        hotKeyRef = nil
+        hotKeyRefs.removeAll()
+        registeredSlots.removeAll()
         isRegistered = false
     }
 
@@ -1165,8 +1419,24 @@ nonisolated private func clickBoomHotKeyHandler(
     _ event: EventRef?,
     _ userData: UnsafeMutableRawPointer?
 ) -> OSStatus {
+    var hotKeyID = EventHotKeyID()
+    if let event {
+        GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotKeyID
+        )
+    }
+    let slot = HotKeySlot(rawValue: hotKeyID.id) ?? .toggle
     Task { @MainActor in
-        AppState.shared.toggleEnabled()
+        switch slot {
+        case .toggle: AppState.shared.toggleEnabled()
+        case .presentation: AppState.shared.togglePresentationMode()
+        }
     }
     return noErr
 }
@@ -1547,6 +1817,30 @@ struct MenuBarQuickPanel: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+
+                Spacer()
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    appState.togglePresentationMode()
+                } label: {
+                    Label(appState.isPresentationMode ? "退出演示" : "演示模式",
+                          systemImage: appState.isPresentationMode ? "person.wave.2.fill" : "person.wave.2")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(appState.isPresentationMode ? Color.orange : Color.accentColor)
+                .help("临时跳过全屏静默与免打扰，并打开键盘 HUD；退出后恢复原设置")
+
+                Toggle(isOn: $appState.keystrokeHUDEnabled) {
+                    Label("键盘 HUD", systemImage: "keyboard")
+                        .font(.system(size: 11))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("在屏幕底部显示按下的按键与快捷键")
 
                 Spacer()
             }
@@ -2560,92 +2854,149 @@ struct ControlPanelView: View {
                             .buttonStyle(.bordered)
                         }
 
-                        SectionCard(icon: "rectangle.on.rectangle.slash", title: "应用排除") {
-                            Text("在下列 App 里不显示点击特效和拖尾，适合录屏、视频会议或全屏游戏")
+                        SectionCard(icon: "person.wave.2", title: "演示模式") {
+                            Toggle("演示模式", isOn: Binding(
+                                get: { appState.isPresentationMode },
+                                set: { enabled in
+                                    if enabled {
+                                        appState.enterPresentationMode()
+                                    } else {
+                                        appState.exitPresentationMode()
+                                    }
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .tint(.orange)
+                            Text("临时跳过全屏静默和免打扰时段，并打开键盘 HUD 与聚光环；退出时逐项恢复进入前的设置。应用规则里的静默仍然生效。")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.45))
+                                .fixedSize(horizontal: false, vertical: true)
+                            if appState.isPresentationMode {
+                                Label("演示进行中，按 \(appState.presentationHotKeySpec.label) 退出，或再点上面的开关",
+                                      systemImage: "record.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.orange)
+                            }
+
+                            Divider().background(Color.white.opacity(0.1))
+
+                            HStack {
+                                Label("演示模式快捷键", systemImage: "command")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Spacer()
+                                HotKeyRecorderButton(slot: .presentation)
+                            }
+                            Toggle("启用演示模式快捷键", isOn: Binding(
+                                get: { appState.presentationHotkeyEnabled },
+                                set: { newValue in
+                                    appState.presentationHotkeyEnabled = newValue
+                                    HotKeyManager.shared.sync()
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .tint(.mint)
+                            Text("默认 \(HotKeySpec.presentationDefault.label)；关掉后只能用面板按钮切换。")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.45))
+                                .fixedSize(horizontal: false, vertical: true)
+                            if appState.presentationHotkeyEnabled, !hotkey.isRegistered(.presentation) {
+                                Label("注册失败，可能被其他 App 占用了", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.orange)
+                            }
+                        }
+
+                        SectionCard(icon: "keyboard", title: "键盘与快捷键") {
+                            Toggle("显示键盘 HUD", isOn: $appState.keystrokeHUDEnabled)
+                                .toggleStyle(.switch)
+                                .tint(.cyan)
+                            Text("在指针所在屏幕底部显示按下的按键；一行最多 3 个键帽，1.6 秒后淡出，密码输入框里自动不显示。")
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.45))
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            HStack(spacing: 6) {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.white.opacity(0.35))
-                                TextField("搜索 App", text: $exclusionSearchText)
-                                    .textFieldStyle(.plain)
+                            if appState.keystrokeHUDEnabled {
+                                Picker("尺寸", selection: $appState.keystrokeHUDSizeRaw) {
+                                    ForEach(KeystrokeHUDSize.allCases) { size in
+                                        Text(size.title).tag(size.rawValue)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+
+                                Picker("保留行数", selection: $appState.keystrokeHUDLineCount) {
+                                    Text("1 行").tag(1)
+                                    Text("2 行").tag(2)
+                                    Text("3 行").tag(3)
+                                }
+                                .pickerStyle(.segmented)
+
+                                Toggle("只显示快捷键组合", isOn: $appState.keystrokeHUDShowShortcutsOnly)
+                                    .toggleStyle(.switch)
+                                    .tint(.mint)
+                                Text("打开后普通打字不进 HUD，只有带 ⌃ / ⌥ / ⇧ / ⌘ 的组合才显示，适合演示快捷键。")
                                     .font(.system(size: 11))
-                                if !exclusionSearchText.isEmpty {
-                                    Button {
-                                        exclusionSearchText = ""
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: 10))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundColor(.white.opacity(0.35))
-                                    .help("清空搜索")
+                                    .foregroundColor(.white.opacity(0.45))
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                if !InputPermission.shared.isGranted {
+                                    Label("需要输入监控权限才能读取键盘事件", systemImage: "exclamationmark.shield.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.orange)
+                                } else if KeystrokeMonitor.shared.isFallbackActive {
+                                    Label("当前使用兼容模式监听，部分按键（如功能键）可能不显示", systemImage: "info.circle")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.white.opacity(0.45))
                                 }
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(Color.white.opacity(0.07))
-                            .cornerRadius(7)
+                        }
 
-                            if filteredExcludedApps.isEmpty {
-                                Text(exclusionSearchText.isEmpty ? "还没有排除任何 App" : "没有匹配的 App")
+                        SectionCard(icon: "speaker.wave.2", title: "点击音效") {
+                            Toggle("播放点击音效", isOn: $appState.clickSoundEnabled)
+                                .toggleStyle(.switch)
+                                .tint(.green)
+                            if appState.clickSoundEnabled {
+                                Picker("音色", selection: $appState.clickSoundStyleRaw) {
+                                    ForEach(ClickSoundStyle.allCases) { style in
+                                        Text(style.title).tag(style.rawValue)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                Text(appState.clickSoundStyle.detail)
                                     .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.3))
-                            } else {
-                                ForEach(filteredExcludedApps) { app in
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "app.dashed")
-                                            .font(.system(size: 12))
-                                            .foregroundColor(.white.opacity(0.5))
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(app.name)
-                                                .font(.system(size: 12, weight: .medium))
-                                                .foregroundColor(.white.opacity(0.85))
-                                            Text(app.bundleID)
-                                                .font(.system(size: 9, design: .monospaced))
-                                                .foregroundColor(.white.opacity(0.35))
-                                        }
-                                        Spacer()
-                                        Button {
-                                            appState.removeExcludedApp(app)
-                                            refreshSelectableApps()
-                                        } label: {
-                                            Image(systemName: "xmark.circle.fill")
-                                                .font(.system(size: 12))
-                                        }
-                                        .buttonStyle(.plain)
-                                        .foregroundColor(.white.opacity(0.35))
-                                        .help("从排除列表移除")
-                                    }
-                                }
-                            }
+                                    .foregroundColor(.white.opacity(0.45))
 
-                            Menu {
-                                if filteredSelectableApps.isEmpty {
-                                    Button(exclusionSearchText.isEmpty ? "没有可添加的 App" : "没有匹配的 App") {}
-                                        .disabled(true)
-                                } else {
-                                    ForEach(filteredSelectableApps) { app in
-                                        Button(app.name) {
-                                            appState.addExcludedApp(app)
-                                            refreshSelectableApps()
-                                        }
-                                    }
+                                HStack(spacing: 8) {
+                                    Image(systemName: "speaker.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.4))
+                                    Slider(value: $appState.clickSoundVolume, in: 0...1)
+                                        .tint(.green)
+                                    Image(systemName: "speaker.wave.3.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.4))
                                 }
-                            } label: {
-                                Label("添加 App", systemImage: "plus.circle")
-                                    .font(.system(size: 12, weight: .semibold))
-                            }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
 
-                            Text("列表会跟随 App 启动、退出自动刷新，也可以在菜单栏快速面板里一键排除当前 App")
+                                Button {
+                                    ClickSoundEngine.shared.play(
+                                        style: appState.clickSoundStyle,
+                                        volume: appState.clickSoundVolume
+                                    )
+                                } label: {
+                                    Label("试听", systemImage: "play.circle")
+                                        .font(.system(size: 11))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                            Text("音效走系统输出：系统录屏和 QuickTime 默认不收录，要录进视频得接虚拟声卡（如 BlackHole）。")
                                 .font(.system(size: 10))
                                 .foregroundColor(.white.opacity(0.3))
                                 .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        SectionCard(icon: "rectangle.on.rectangle.slash", title: "应用规则") {
+                            AppRuleListView(appState: appState)
                         }
 
                         SectionCard(icon: "gearshape.2", title: "系统") {
@@ -2884,6 +3235,7 @@ struct HotKeyRecorderButton: View {
     @State private var conflictMessage: String?
 
     var compact = false
+    var slot: HotKeySlot = .toggle
 
     var body: some View {
         Button {
@@ -2898,7 +3250,7 @@ struct HotKeyRecorderButton: View {
                     Image(systemName: "record.circle")
                         .font(.system(size: 9, weight: .bold))
                 }
-                Text(isRecording ? "按下快捷键…" : (conflictMessage ?? appState.hotKeySpec.label))
+                Text(isRecording ? "按下快捷键…" : (conflictMessage ?? hotkey.spec(for: slot).label))
                     .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
             }
             .foregroundStyle(conflictMessage == nil ? Color.primary : Color.orange)
@@ -2924,8 +3276,8 @@ struct HotKeyRecorderButton: View {
         guard monitor == nil else { return }
         isRecording = true
         conflictMessage = nil
-        // 先注销旧快捷键：否则按到旧组合会直接触发开关，而不是被录制到
-        hotkey.unregister()
+        // 先注销这个槽位的旧快捷键：否则按到旧组合会直接触发动作，而不是被录制到
+        hotkey.unregister(slot)
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             if Int(event.keyCode) == kVK_Escape {
                 cancelRecording()
@@ -2943,7 +3295,7 @@ struct HotKeyRecorderButton: View {
     private func finishRecording(with spec: HotKeySpec) {
         stopMonitor()
         isRecording = false
-        if hotkey.applyProbed(spec) {
+        if hotkey.applyProbed(spec, for: slot) {
             conflictMessage = nil
         } else {
             // 组合被占用：保留原快捷键，把提示挂在按钮上几秒
@@ -3232,10 +3584,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         openPanelOnFirstLaunchIfNeeded()
         HotKeyManager.shared.sync()
+        KeystrokeHUDController.shared.start()
         UpdateChecker.shared.checkIfDue()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        KeystrokeHUDController.shared.stop()
         RuntimeController.shared.stop()
     }
 
@@ -3354,6 +3708,8 @@ class EffectEngine: ObservableObject {
     private var lastTrailSampleTime = Date.distantPast
     /// 预览动画用：每次重新预览时自增，旧的一批定时投递就会自动作废
     private var previewToken = 0
+    /// 点击音效的 30ms 防抖时间戳。
+    private var lastClickSoundAt = Date.distantPast
 
     /// 拖尾在屏幕上停留多久：由拖尾自己的「停留时长」决定，与点击效果解耦
     var trailLifetime: TimeInterval {
@@ -3362,6 +3718,7 @@ class EffectEngine: ObservableObject {
 
     func trigger(at point: CGPoint, button: MouseButtonKind = .left, force: Bool = false) {
         guard force || (state.isEnabled && !state.isPaused) else { return }
+        playClickSoundIfNeeded()
 
         pointerPosition = point
         if state.spotlightEnabled {
@@ -3420,9 +3777,21 @@ class EffectEngine: ObservableObject {
         particles.append(contentsOf: newParticles)
 
         // 点击时顺手补一个拖尾光点：先画光带再点也没关系，两者互不抢占
-        if state.trailEnabled && !force {
+        if state.isTrailActive && !force {
             beginTrail(at: point)
         }
+    }
+
+    /// 点击音效：只在真正产生特效时响，静默 / 暂停 / 排除都不会走到这里。
+    private func playClickSoundIfNeeded() {
+        let now = Date()
+        guard ClickSoundLogic.shouldPlay(
+            isEnabled: state.clickSoundEnabled,
+            isRunning: true,
+            secondsSinceLastPlay: now.timeIntervalSince(lastClickSoundAt)
+        ) else { return }
+        lastClickSoundAt = now
+        ClickSoundEngine.shared.play(style: state.clickSoundStyle, volume: state.clickSoundVolume)
     }
 
     func updatePointer(at point: CGPoint, shouldExtendTrail: Bool) {
@@ -3436,7 +3805,7 @@ class EffectEngine: ObservableObject {
 
     /// 按下鼠标时补一个光点：只点击不移动也能看到反馈，同时结束正在播放的预览动画。
     func beginTrail(at point: CGPoint) {
-        guard state.trailEnabled, state.isEnabled, !state.isPaused else { return }
+        guard state.isTrailActive, state.isEnabled, !state.isPaused else { return }
         previewToken &+= 1
 
         let now = Date()
@@ -3453,7 +3822,7 @@ class EffectEngine: ObservableObject {
 
     /// 鼠标移动（滑动或拖动）时持续记录轨迹点；只要打开拖尾开关就生效
     func extendTrail(at point: CGPoint) {
-        guard state.trailEnabled, state.isEnabled, !state.isPaused else { return }
+        guard state.isTrailActive, state.isEnabled, !state.isPaused else { return }
         previewToken &+= 1
 
         let now = Date()
@@ -3477,7 +3846,7 @@ class EffectEngine: ObservableObject {
 
     /// 面板和菜单栏的「预览」：点击效果照常播放；开了拖尾就额外模拟一段滑动。
     func preview(at point: CGPoint) {
-        if state.trailEnabled {
+        if state.isTrailActive {
             previewTrail(at: point)
         }
         trigger(at: point, force: true)
@@ -3485,7 +3854,7 @@ class EffectEngine: ObservableObject {
 
     /// 只播放拖尾动画，不触发点击效果：面板里的「预览拖尾」按钮用
     func previewTrailOnly(at point: CGPoint) {
-        guard state.trailEnabled else { return }
+        guard state.isTrailActive else { return }
         previewTrail(at: point)
     }
 
@@ -3506,7 +3875,7 @@ class EffectEngine: ObservableObject {
             let y = start.y + (end.y - start.y) * t + sin(t * .pi * 1.35) * spread * 0.6
             // 逐点投递，画出一条从左向右划过的弧线，而不是整条同时出现
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.02 + Double(index) * 0.011) { [weak self] in
-                guard let self, self.previewToken == token, self.state.trailEnabled else { return }
+                guard let self, self.previewToken == token, self.state.isTrailActive else { return }
                 self.appendTrailPoint(CGPoint(x: x, y: y), at: Date())
             }
         }
@@ -4585,7 +4954,7 @@ final class GlobalMouseMonitor: ObservableObject {
         let state = AppState.shared
         guard state.isEnabled,
               !state.isPaused,
-              state.trailEnabled || state.spotlightEnabled else {
+              state.isTrailActive || state.spotlightEnabled else {
             syncMotion(enabled: false, engine: engine)
             return
         }
@@ -4598,7 +4967,7 @@ final class GlobalMouseMonitor: ObservableObject {
         guard let point = OverlayGeometry.mousePoint() else { return }
         engine.updatePointer(
             at: point,
-            shouldExtendTrail: shouldExtendTrail && state.trailEnabled
+            shouldExtendTrail: shouldExtendTrail && state.isTrailActive
         )
     }
 
@@ -4622,7 +4991,7 @@ final class GlobalMouseMonitor: ObservableObject {
             triggerMode: state.trailTriggerMode,
             optionPressed: event.modifierFlags.contains(.option),
             commandPressed: event.modifierFlags.contains(.command),
-            trailEnabled: state.trailEnabled,
+            trailEnabled: state.isTrailActive,
             rightClickEnabled: state.rightClickEnabled
         )
     }

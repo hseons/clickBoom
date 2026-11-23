@@ -70,6 +70,7 @@ struct RuntimeStatusView: View {
         case .quietHours(let schedule): return "\(schedule) 自动静默，结束边界恢复；预览仍可使用。"
         case .excluded: return "切换到其他应用时自动恢复；预览仍可使用。"
         case .fullScreen: return "退出全屏时自动恢复；预览仍可使用。"
+        case .presenting: return "全屏与免打扰已临时跳过，退出演示模式后自动恢复。"
         case .running:
             return runtime.targetApp.map { "作用应用：\($0.name)" } ?? "等待鼠标点击，可随时预览。"
         }
@@ -83,6 +84,7 @@ struct RuntimeStatusView: View {
         case .quietHours: return "免打扰设置"
         case .excluded: return "取消静默"
         case .fullScreen: return "静默设置"
+        case .presenting: return "退出演示"
         case .running: return nil
         }
     }
@@ -97,6 +99,7 @@ struct RuntimeStatusView: View {
         case .excluded:
             if let app = runtime.targetApp { state.removeExcludedApp(app) }
         case .quietHours, .fullScreen: showingSilenceSettings = true
+        case .presenting: state.exitPresentationMode()
         case .running: break
         }
         runtime.refresh(forceFullScreen: true)

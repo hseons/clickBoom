@@ -15,6 +15,17 @@ nonisolated struct SettingsBackup: Codable, Equatable {
     var quietHoursEndMinutes: Int?
     /// 1.11 新增：生效的日子（周一 = bit 0），缺省沿用当前设置。
     var quietHoursWeekdays: Int?
+    /// 1.12 新增：按应用规则。旧备份没有这个字段，导入时由排除列表转换而来。
+    var appRules: [AppRule]?
+    var presentationHotKeySpec: String?
+    var presentationHotkeyEnabled: Bool?
+    var clickSoundEnabled: Bool?
+    var clickSoundStyle: String?
+    var clickSoundVolume: Double?
+    var keystrokeHUDEnabled: Bool?
+    var keystrokeHUDSize: Int?
+    var keystrokeHUDLineCount: Int?
+    var keystrokeHUDShowShortcutsOnly: Bool?
 
     init(
         schemaVersion: Int = SettingsBackupLogic.schemaVersion,
@@ -25,7 +36,17 @@ nonisolated struct SettingsBackup: Codable, Equatable {
         quietHoursEnabled: Bool? = nil,
         quietHoursStartMinutes: Int? = nil,
         quietHoursEndMinutes: Int? = nil,
-        quietHoursWeekdays: Int? = nil
+        quietHoursWeekdays: Int? = nil,
+        appRules: [AppRule]? = nil,
+        presentationHotKeySpec: String? = nil,
+        presentationHotkeyEnabled: Bool? = nil,
+        clickSoundEnabled: Bool? = nil,
+        clickSoundStyle: String? = nil,
+        clickSoundVolume: Double? = nil,
+        keystrokeHUDEnabled: Bool? = nil,
+        keystrokeHUDSize: Int? = nil,
+        keystrokeHUDLineCount: Int? = nil,
+        keystrokeHUDShowShortcutsOnly: Bool? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.hotKeySpec = hotKeySpec
@@ -36,6 +57,16 @@ nonisolated struct SettingsBackup: Codable, Equatable {
         self.quietHoursStartMinutes = quietHoursStartMinutes
         self.quietHoursEndMinutes = quietHoursEndMinutes
         self.quietHoursWeekdays = quietHoursWeekdays
+        self.appRules = appRules
+        self.presentationHotKeySpec = presentationHotKeySpec
+        self.presentationHotkeyEnabled = presentationHotkeyEnabled
+        self.clickSoundEnabled = clickSoundEnabled
+        self.clickSoundStyle = clickSoundStyle
+        self.clickSoundVolume = clickSoundVolume
+        self.keystrokeHUDEnabled = keystrokeHUDEnabled
+        self.keystrokeHUDSize = keystrokeHUDSize
+        self.keystrokeHUDLineCount = keystrokeHUDLineCount
+        self.keystrokeHUDShowShortcutsOnly = keystrokeHUDShowShortcutsOnly
     }
 
     /// 把备份里的免打扰字段合进当前设置；旧备份缺少这些字段时保持当前值。
@@ -50,7 +81,7 @@ nonisolated struct SettingsBackup: Codable, Equatable {
 }
 
 enum SettingsBackupLogic {
-    nonisolated static let schemaVersion = 1
+    nonisolated static let schemaVersion = 2
 
     nonisolated static func encode(_ backup: SettingsBackup) throws -> Data {
         let encoder = JSONEncoder()
@@ -65,6 +96,20 @@ enum SettingsBackupLogic {
             throw SettingsBackupError.unsupportedVersion(backup.schemaVersion)
         }
         return backup
+    }
+
+    /// 旧备份升级：v1 只有排除列表，把它转成「整应用静默」的规则；
+    /// 已有的规则保持不变，避免来回导入时被排除列表覆盖。
+    nonisolated static func rules(from backup: SettingsBackup) -> [AppRule] {
+        let existing = backup.appRules ?? []
+        guard existing.isEmpty else {
+            return AppRuleLogic.merging(existing, into: [], ownBundleID: nil)
+        }
+        return AppRuleLogic.merging(
+            AppRuleLogic.rules(from: mergingExclusions(backup.excludedApps)),
+            into: [],
+            ownBundleID: nil
+        )
     }
 
     /// 合并导入的排除列表：逐条走 adding，顺带去重、更新名称、拒绝把 ClickBoom 自己排除。

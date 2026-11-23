@@ -54,6 +54,8 @@ final class RuntimeController: ObservableObject {
     private var quietHoursBoundary: Date?
     private var started = false
     private var hadPermission = false
+    /// 上一次为目标应用套用的预设，避免每帧刷新都把用户手动改动覆盖掉。
+    private var appliedPresetID: UUID?
 
     convenience init() {
         self.init(state: .shared, permission: .shared, engine: .shared,
@@ -96,6 +98,8 @@ final class RuntimeController: ObservableObject {
             state.$isEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$pauseUntil.map { _ in () }.eraseToAnyPublisher(),
             state.$excludedApps.map { _ in () }.eraseToAnyPublisher(),
+            state.$appRules.map { _ in () }.eraseToAnyPublisher(),
+            state.$isPresentationMode.map { _ in () }.eraseToAnyPublisher(),
             state.$autoSilenceInFullScreen.map { _ in () }.eraseToAnyPublisher(),
             state.$quietHoursEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$quietHoursStartMinutes.map { _ in () }.eraseToAnyPublisher(),
@@ -152,6 +156,7 @@ final class RuntimeController: ObservableObject {
             isEnabled: state.isEnabled,
             hasPermission: permission.isGranted,
             isPaused: state.isPaused,
+            isPresentationMode: state.isPresentationMode,
             quietHours: state.quietHours,
             isQuietHoursSkipped: state.isQuietHoursSkipped(at: now()),
             now: now(),
@@ -160,9 +165,14 @@ final class RuntimeController: ObservableObject {
             isFullScreen: snapshot.isFullScreen,
             appName: snapshot.app?.name ?? "前台 App"
         )
+        state.trailSuppressedForCurrentApp = AppRuleLogic.disablesTrail(
+            for: snapshot.app?.bundleID,
+            in: state.appRules
+        )
         let changed = next != status
         let targetChanged = targetApp != snapshot.app
         if targetChanged { targetApp = snapshot.app }
+        if targetChanged { applyRulePreset(for: snapshot.app) }
         if resetEffects || targetChanged || (changed && !next.isRunning) {
             monitor?.cancelPendingClicks()
             engine.clearEffects()
@@ -175,7 +185,7 @@ final class RuntimeController: ObservableObject {
         }
         monitor?.syncClicks(mode: state.clickTriggerMode, rightClickEnabled: state.rightClickEnabled,
                             isRunning: next.isRunning, engine: engine)
-        let needsMotion = next.isRunning && (state.trailEnabled || state.spotlightEnabled)
+        let needsMotion = next.isRunning && (state.isTrailActive || state.spotlightEnabled)
         let wasMonitoring = monitor?.hasMotionMonitor == true
         monitor?.syncMotion(enabled: needsMotion, engine: engine)
         if needsMotion, resetEffects || targetChanged || changed || !wasMonitoring,
@@ -189,11 +199,24 @@ final class RuntimeController: ObservableObject {
         let inQuietHours = state.quietHours.isActive(at: now())
             && !state.isQuietHoursSkipped(at: now())
         let needsFullScreenCheck = state.isEnabled && permission.isGranted && !state.isPaused
+            && !state.isPresentationMode
             && !inQuietHours
             && excluded == nil && snapshot.app != nil && state.autoSilenceInFullScreen
         syncFullScreenTimer(needed: needsFullScreenCheck)
 
         syncQuietHoursTimer()
+    }
+
+    /// 切换到某个应用时按规则套用它的预设；离开后不强制还原，避免把用户手改的参数顶掉。
+    private func applyRulePreset(for app: ExcludedApp?) {
+        guard let presetID = AppRuleLogic.presetID(for: app?.bundleID, in: state.appRules) else {
+            appliedPresetID = nil
+            return
+        }
+        guard presetID != appliedPresetID else { return }
+        guard let preset = state.savedPresets.first(where: { $0.id == presetID }) else { return }
+        appliedPresetID = presetID
+        state.apply(preset)
     }
 
     /// 「本次跳过」：放行当前免打扰时段，到下一个边界自动恢复规则。
