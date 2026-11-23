@@ -2659,7 +2659,9 @@ struct ControlPanelView: View {
 
                 // --- 中间滚动区域 ---
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 16) {
+                    // 卡片数量多、每个都不小：用 LazyVStack 只布局可见区域，
+                    // 否则每次拖动滑杆（每帧都会改 AppState）都要把整列卡片重新量一遍。
+                    LazyVStack(spacing: 16) {
                         
                         // 颜色卡片
                         SectionCard(icon: "paintpalette.fill", title: "外观") {
@@ -3424,7 +3426,40 @@ struct ModernSlider: View {
     let range: ClosedRange<Double>
     let icon: String
     let format: String
-    
+
+    /// 拖动时先用本地值驱动滑块，再按 20Hz 回写 AppState。
+    /// 之前每个拖动事件都会改 AppState，整个控制面板（几百个视图）跟着重算一遍，
+    /// 在高刷屏上一秒能触发一百多次，拖起来就是一顿一顿的。
+    @State private var draft: Double?
+    @State private var pendingValue: Double?
+    @State private var flushTask: Task<Void, Never>?
+
+    private var sliderValue: Binding<Double> {
+        Binding(
+            get: { draft ?? value },
+            set: { newValue in
+                draft = newValue
+                pendingValue = newValue
+                scheduleFlush()
+            }
+        )
+    }
+
+    private func scheduleFlush() {
+        guard flushTask == nil else { return }
+        flushTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            flushTask = nil
+            commitPending()
+        }
+    }
+
+    private func commitPending() {
+        guard let pending = pendingValue else { return }
+        pendingValue = nil
+        if abs(value - pending) > 0.0001 { value = pending }
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             HStack {
@@ -3441,11 +3476,25 @@ struct ModernSlider: View {
                     .cornerRadius(4)
             }
             
-            Slider(value: $value, in: range)
-                .tint(.white)
-                .controlSize(.small)
+            Slider(value: sliderValue, in: range) { editing in
+                if !editing {
+                    // 松手立刻落到最终值，避免停在节流窗口里的中间值
+                    if let draft { value = draft }
+                    pendingValue = nil
+                    flushTask?.cancel()
+                    flushTask = nil
+                    self.draft = nil
+                }
+            }
+            .tint(.white)
+            .controlSize(.small)
         }
         .padding(.vertical, 4)
+        .onChange(of: value) { _, newValue in
+            // 外部改动（套用预设、导入备份、重置）时清掉本地草稿
+            if draft == nil { return }
+            if abs(newValue - (draft ?? newValue)) > 0.0001, flushTask == nil { self.draft = nil }
+        }
     }
 }
 
@@ -3554,6 +3603,55 @@ struct SavedPresetChip: View {
 }
 
 // MARK: - UI 组件: 分组卡片
+/// 拖尾线段：把每帧都要用到的几何量提前算好，
+/// 渲染时不再逐段创建 Path、也不重复算方向与新鲜度。
+nonisolated struct TrailSegment {
+    let start: CGPoint
+    let end: CGPoint
+    let normalX: Double
+    let normalY: Double
+    let freshness: Double
+    let age: Double
+    let seed: Int
+
+    var isNeonLit: Bool {
+        Int(Double(seed) / 1000.0 * 36) % 12 < 7
+    }
+
+    func sparkCenter(baseWidth: Double) -> CGPoint {
+        let driftSpeed = 18.0 + Double(abs((seed * 7) % 30))
+        let drift = max(0, age - 0.03) * driftSpeed
+        let lateral = sin(Double((seed / 4) % 360) * .pi / 180) * baseWidth * 1.9
+        return CGPoint(x: end.x + normalX * lateral, y: end.y + normalY * lateral + drift)
+    }
+}
+
+nonisolated func trailSegments(from points: [TrailPoint], now: Date, life: Double) -> [TrailSegment] {
+    guard points.count > 1, life > 0 else { return [] }
+    var result: [TrailSegment] = []
+    result.reserveCapacity(points.count - 1)
+    for index in 1..<points.count {
+        let previous = points[index - 1]
+        let current = points[index]
+        let age = now.timeIntervalSince(current.time)
+        let freshness = max(0, 1 - age / life)
+        if freshness <= 0 { continue }
+        let dx = current.x - previous.x
+        let dy = current.y - previous.y
+        let length = max(0.001, sqrt(dx * dx + dy * dy))
+        result.append(TrailSegment(
+            start: CGPoint(x: previous.x, y: previous.y),
+            end: CGPoint(x: current.x, y: current.y),
+            normalX: -dy / length,
+            normalY: dx / length,
+            freshness: freshness,
+            age: age,
+            seed: Int(current.time.timeIntervalSinceReferenceDate * 1000)
+        ))
+    }
+    return result
+}
+
 struct SectionCard<Content: View>: View {
     let icon: String
     let title: String
@@ -4347,172 +4445,159 @@ struct EffectOverlayView: View {
             ? 1.0
             : 0.88 + 0.12 * sin(now.timeIntervalSinceReferenceDate * 9.0)
 
-        if style == .brush {
-            drawBrushStroke(now: now, points: points, color: color, baseWidth: baseWidth, life: life, context: context)
-            return
+        // 逐段 stroke 的开销随采样点线性增长：180 个点时每种样式每帧要画 500+ 次，
+        // 高刷屏上很容易掉帧。这里先按「新鲜度」把线段装进 8 个桶，每个桶合并成一条
+        // Path 只描边一次，观感几乎不变，描边次数从数百降到几十。
+        let bucketCount = 8
+        let segments = trailSegments(from: points, now: now, life: life)
+        guard !segments.isEmpty else { return }
+        var buckets = Array(repeating: [TrailSegment](), count: bucketCount)
+        for segment in segments {
+            let index = min(bucketCount - 1, max(0, Int((1 - segment.freshness) * Double(bucketCount))))
+            buckets[index].append(segment)
         }
 
-        if points.count > 1 {
-            for index in 1..<points.count {
-                let previous = points[index - 1]
-                let current = points[index]
-                let age = now.timeIntervalSince(current.time)
-                let freshness = max(0, 1 - age / life)
-                if freshness <= 0 { continue }
+        func path(for segments: [TrailSegment]) -> Path {
+            var path = Path()
+            for segment in segments {
+                path.move(to: segment.start)
+                path.addLine(to: segment.end)
+            }
+            return path
+        }
 
+        func bucketFreshness(_ index: Int) -> Double {
+            max(0, 1 - (Double(index) + 0.5) / Double(bucketCount))
+        }
+
+        switch style {
+        case .brush:
+            // 毛笔在 drawTrail 开头整条绘制，这里不会走到
+            break
+        case .classic:
+            // 平滑变细的实体光带：柔光 + 主体 + 白色亮芯
+            for (index, segments) in buckets.enumerated() where !segments.isEmpty {
+                let freshness = bucketFreshness(index)
                 let fade = freshness * freshness
                 let width = baseWidth * (0.35 + 0.65 * freshness)
-                // 用采样点自身的时间做种子，避免轨迹被裁剪时星火位置来回跳
-                let pointSeed = Int(current.time.timeIntervalSinceReferenceDate * 1000)
-                var segment = Path()
-                segment.move(to: CGPoint(x: previous.x, y: previous.y))
-                segment.addLine(to: CGPoint(x: current.x, y: current.y))
-
-                // 这一段的方向与法线，彗星的火星和丝带的边缘靠它往两侧偏移
-                let dx = current.x - previous.x
-                let dy = current.y - previous.y
-                let segmentLength = max(0.001, sqrt(dx * dx + dy * dy))
-                let nx = -dy / segmentLength
-                let ny = dx / segmentLength
-
-                switch style {
-                case .classic:
-                    // 平滑变细的实体光带：柔光 + 主体 + 白色亮芯
-                    context.stroke(
-                        segment,
-                        with: .color(color.opacity(0.16 * fade)),
-                        style: StrokeStyle(lineWidth: width * 2.4, lineCap: .round)
-                    )
-                    context.stroke(
-                        segment,
-                        with: .color(color.opacity(0.85 * fade)),
-                        style: StrokeStyle(lineWidth: width, lineCap: .round)
-                    )
-                    context.stroke(
-                        segment,
-                        with: .color(.white.opacity(0.28 * fade)),
-                        style: StrokeStyle(lineWidth: max(1, width * 0.28), lineCap: .round)
-                    )
-                case .brush:
-                    // 毛笔在 drawTrail 开头整条绘制，这里不会走到
-                    break
-                case .neon:
-                    // 霓虹：灯管等宽、整体断续闪烁，外圈始终留一层辉光
-                    let phase = Int(current.time.timeIntervalSinceReferenceDate * 36) % 12
-                    let isLit = phase < 7
-                    let neonFlicker = 0.80 + 0.20 * sin(now.timeIntervalSinceReferenceDate * 33 + Double(pointSeed % 29))
-                    let glowWidth = baseWidth * (isLit ? 3.8 : 2.8)
-                    context.stroke(
-                        segment,
-                        with: .color(color.opacity((isLit ? 0.05 : 0.012) * fade * neonFlicker)),
-                        style: StrokeStyle(lineWidth: glowWidth, lineCap: .round, lineJoin: .round)
-                    )
-                    context.stroke(
-                        segment,
-                        with: .color(color.opacity((isLit ? 0.14 : 0.02) * fade * neonFlicker)),
-                        style: StrokeStyle(lineWidth: glowWidth * 0.55, lineCap: .round)
-                    )
-                    if isLit {
-                        let tube = max(1.8, baseWidth * 0.60)
-                        context.stroke(
-                            segment,
-                            with: .color(color.opacity(0.95 * fade * neonFlicker)),
-                            style: StrokeStyle(lineWidth: tube, lineCap: .round)
-                        )
-                        context.stroke(
-                            segment,
-                            with: .color(.white.opacity(0.85 * fade * neonFlicker)),
-                            style: StrokeStyle(lineWidth: max(0.8, tube * 0.38), lineCap: .round)
-                        )
-                    }
-                case .comet:
-                    // 彗星：细亮脊 + 柔和尾焰，火星以不同速度往后下方散落
-                    let plume = baseWidth * (0.5 + 0.8 * (1 - freshness))
-                    context.stroke(
-                        segment,
-                        with: .color(color.opacity(0.08 * fade)),
-                        style: StrokeStyle(lineWidth: plume * 1.6, lineCap: .round)
-                    )
-                    context.stroke(
-                        segment,
-                        with: .color(color.opacity(0.28 * fade)),
-                        style: StrokeStyle(lineWidth: plume, lineCap: .round)
-                    )
-                    context.stroke(
-                        segment,
-                        with: .color(.white.opacity(0.75 * fade)),
-                        style: StrokeStyle(lineWidth: max(1.0, baseWidth * 0.28), lineCap: .round)
-                    )
-                    if pointSeed % 4 == 0 {
-                        let driftSpeed = 18.0 + Double(abs((pointSeed * 7) % 30))
-                        let drift = max(0, age - 0.03) * driftSpeed
-                        let lateral = sin(Double((pointSeed / 4) % 360) * .pi / 180) * baseWidth * 1.9
-                        let sparkRadius = max(0.7, baseWidth * 0.26 * (0.5 + 0.5 * freshness))
-                        var spark = Path()
-                        spark.addEllipse(in: CGRect(
-                            x: current.x + nx * lateral - sparkRadius,
-                            y: current.y + ny * lateral + drift - sparkRadius,
-                            width: sparkRadius * 2,
-                            height: sparkRadius * 2
-                        ))
-                        context.fill(spark, with: .color(color.opacity(0.65 * fade)))
-                    }
-                case .ribbon:
-                    // 丝带：宽而半透明的带面，宽度随采样点起伏，边缘更亮一些
-                    let wobble = sin(Double(pointSeed) / 120.0) * width * 0.5
-                    let bandWidth = max(width * 1.8, width * 2.8 + wobble)
-                    context.stroke(
-                        segment,
-                        with: .color(color.opacity(0.16 * fade)),
-                        style: StrokeStyle(lineWidth: bandWidth, lineCap: .round, lineJoin: .round)
-                    )
-                    context.stroke(
-                        segment,
-                        with: .color(color.opacity(0.30 * fade)),
-                        style: StrokeStyle(lineWidth: bandWidth * 0.55, lineCap: .round)
-                    )
-                    let edgeOffset = bandWidth * 0.5
-                    for side in [-1.0, 1.0] {
-                        var edge = Path()
-                        edge.move(to: CGPoint(
-                            x: previous.x + nx * edgeOffset * side,
-                            y: previous.y + ny * edgeOffset * side
-                        ))
-                        edge.addLine(to: CGPoint(
-                            x: current.x + nx * edgeOffset * side,
-                            y: current.y + ny * edgeOffset * side
-                        ))
-                        context.stroke(
-                            edge,
-                            with: .color(color.opacity(0.45 * fade)),
-                            style: StrokeStyle(lineWidth: 1, lineCap: .round)
-                        )
-                    }
-                case .stardust:
-                    // 不画连续线，只留下大小不一的光点
+                let merged = path(for: segments)
+                context.stroke(merged, with: .color(color.opacity(0.16 * fade)),
+                               style: StrokeStyle(lineWidth: width * 2.4, lineCap: .round, lineJoin: .round))
+                context.stroke(merged, with: .color(color.opacity(0.85 * fade)),
+                               style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
+                context.stroke(merged, with: .color(.white.opacity(0.28 * fade)),
+                               style: StrokeStyle(lineWidth: max(1, width * 0.28), lineCap: .round, lineJoin: .round))
+            }
+        case .neon:
+            // 霓虹：灯管等宽、整体断续闪烁，外圈始终留一层辉光。
+            // 闪烁是按时间相位整段切的，所以先按「亮 / 灭」分成两组，各画一遍。
+            let neonFlicker = 0.80 + 0.20 * sin(now.timeIntervalSinceReferenceDate * 33)
+            var lit: [TrailSegment] = []
+            var dim: [TrailSegment] = []
+            for segment in segments {
+                if segment.isNeonLit { lit.append(segment) } else { dim.append(segment) }
+            }
+            if !dim.isEmpty {
+                let merged = path(for: dim)
+                context.stroke(merged, with: .color(color.opacity(0.012)),
+                               style: StrokeStyle(lineWidth: baseWidth * 2.8, lineCap: .round, lineJoin: .round))
+                context.stroke(merged, with: .color(color.opacity(0.02)),
+                               style: StrokeStyle(lineWidth: baseWidth * 2.8 * 0.55, lineCap: .round))
+            }
+            if !lit.isEmpty {
+                let merged = path(for: lit)
+                let tube = max(1.8, baseWidth * 0.60)
+                context.stroke(merged, with: .color(color.opacity(0.05 * neonFlicker)),
+                               style: StrokeStyle(lineWidth: baseWidth * 3.8, lineCap: .round, lineJoin: .round))
+                context.stroke(merged, with: .color(color.opacity(0.14 * neonFlicker)),
+                               style: StrokeStyle(lineWidth: baseWidth * 3.8 * 0.55, lineCap: .round))
+                context.stroke(merged, with: .color(color.opacity(0.95 * neonFlicker)),
+                               style: StrokeStyle(lineWidth: tube, lineCap: .round))
+                context.stroke(merged, with: .color(.white.opacity(0.85 * neonFlicker)),
+                               style: StrokeStyle(lineWidth: max(0.8, tube * 0.38), lineCap: .round))
+            }
+        case .comet:
+            // 彗星：细亮脊 + 柔和尾焰，火星以不同速度往后下方散落
+            var sparkPath = Path()
+            for (index, segments) in buckets.enumerated() where !segments.isEmpty {
+                let freshness = bucketFreshness(index)
+                let fade = freshness * freshness
+                let width = baseWidth * (0.35 + 0.65 * freshness)
+                let plume = baseWidth * (0.5 + 0.8 * (1 - freshness))
+                let merged = path(for: segments)
+                context.stroke(merged, with: .color(color.opacity(0.08 * fade)),
+                               style: StrokeStyle(lineWidth: plume * 1.6, lineCap: .round, lineJoin: .round))
+                context.stroke(merged, with: .color(color.opacity(0.28 * fade)),
+                               style: StrokeStyle(lineWidth: plume, lineCap: .round))
+                context.stroke(merged, with: .color(.white.opacity(0.75 * fade)),
+                               style: StrokeStyle(lineWidth: max(1.0, width * 0.28), lineCap: .round))
+                for segment in segments where segment.seed % 4 == 0 {
+                    let radius = max(0.7, baseWidth * 0.26 * (0.5 + 0.5 * freshness))
+                    let center = segment.sparkCenter(baseWidth: baseWidth)
+                    sparkPath.addEllipse(in: CGRect(x: center.x - radius, y: center.y - radius,
+                                                    width: radius * 2, height: radius * 2))
+                }
+            }
+            if !sparkPath.isEmpty {
+                context.fill(sparkPath, with: .color(color.opacity(0.5)))
+            }
+        case .ribbon:
+            // 丝带：宽而半透明的带面，宽度随采样点起伏，边缘更亮一些
+            var leftEdge = Path()
+            var rightEdge = Path()
+            for (index, segments) in buckets.enumerated() where !segments.isEmpty {
+                let freshness = bucketFreshness(index)
+                let fade = freshness * freshness
+                let width = baseWidth * (0.35 + 0.65 * freshness)
+                let bandWidth = max(width * 1.8, width * 2.8)
+                let merged = path(for: segments)
+                context.stroke(merged, with: .color(color.opacity(0.16 * fade)),
+                               style: StrokeStyle(lineWidth: bandWidth, lineCap: .round, lineJoin: .round))
+                context.stroke(merged, with: .color(color.opacity(0.30 * fade)),
+                               style: StrokeStyle(lineWidth: bandWidth * 0.55, lineCap: .round))
+                let edgeOffset = bandWidth * 0.5
+                for segment in segments {
+                    leftEdge.move(to: CGPoint(x: segment.start.x + segment.normalX * edgeOffset,
+                                              y: segment.start.y + segment.normalY * edgeOffset))
+                    leftEdge.addLine(to: CGPoint(x: segment.end.x + segment.normalX * edgeOffset,
+                                                 y: segment.end.y + segment.normalY * edgeOffset))
+                    rightEdge.move(to: CGPoint(x: segment.start.x - segment.normalX * edgeOffset,
+                                               y: segment.start.y - segment.normalY * edgeOffset))
+                    rightEdge.addLine(to: CGPoint(x: segment.end.x - segment.normalX * edgeOffset,
+                                                  y: segment.end.y - segment.normalY * edgeOffset))
+                }
+            }
+            if !leftEdge.isEmpty {
+                context.stroke(leftEdge, with: .color(color.opacity(0.45)),
+                               style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                context.stroke(rightEdge, with: .color(color.opacity(0.45)),
+                               style: StrokeStyle(lineWidth: 1, lineCap: .round))
+            }
+        case .stardust:
+            // 不画连续线，只留下大小不一的光点
+            for (index, segments) in buckets.enumerated() where !segments.isEmpty {
+                let freshness = bucketFreshness(index)
+                let fade = freshness * freshness
+                let width = baseWidth * (0.35 + 0.65 * freshness)
+                var dots = Path()
+                var sparks = Path()
+                for segment in segments {
                     let dotRadius = max(0.6, width * 0.32 + baseWidth * 0.12 * freshness)
-                    var dot = Path()
-                    dot.addEllipse(in: CGRect(
-                        x: current.x - dotRadius,
-                        y: current.y - dotRadius,
-                        width: dotRadius * 2,
-                        height: dotRadius * 2
-                    ))
-                    context.fill(dot, with: .color(color.opacity(0.75 * fade)))
-                    if pointSeed % 6 == 0 {
+                    dots.addEllipse(in: CGRect(x: segment.end.x - dotRadius, y: segment.end.y - dotRadius,
+                                               width: dotRadius * 2, height: dotRadius * 2))
+                    if segment.seed % 6 == 0 {
                         let sparkRadius = dotRadius * 0.55
-                        var spark = Path()
-                        spark.addEllipse(in: CGRect(
-                            x: current.x - sparkRadius,
-                            y: current.y - sparkRadius,
-                            width: sparkRadius * 2,
-                            height: sparkRadius * 2
-                        ))
-                        context.fill(spark, with: .color(.white.opacity(0.6 * fade)))
+                        sparks.addEllipse(in: CGRect(x: segment.end.x - sparkRadius, y: segment.end.y - sparkRadius,
+                                                     width: sparkRadius * 2, height: sparkRadius * 2))
                     }
+                }
+                context.fill(dots, with: .color(color.opacity(0.75 * fade)))
+                if !sparks.isEmpty {
+                    context.fill(sparks, with: .color(.white.opacity(0.6 * fade)))
                 }
             }
         }
+
 
         // 毛笔只留一点笔尖积墨，不做发光球
         if style == .brush {

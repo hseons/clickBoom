@@ -252,6 +252,11 @@ scripts/release.sh          # 打包 DMG（通用二进制，可选签名/公证
 完整历史见 [CHANGELOG.md](CHANGELOG.md)，这里只保留最近的修复与版本。
 本轮实现范围、后续启动条件和验收范围见 [ROADMAP.md](ROADMAP.md)；1.12 的完整方案与交付回顾见 [docs/next-release-1.12.md](docs/next-release-1.12.md)，下一版（1.13 屏幕标注与预设分享）见 [docs/next-release-1.13.md](docs/next-release-1.13.md)。
 
+### 1.12.3
+
+- 拖尾分桶渲染、面板 LazyVStack、滑杆 20Hz 节流，交互更跟手
+- 新增 `scripts/smoke.sh`：构建 + 单测 + 窗口/日志/CPU 真机冒烟
+
 ### 1.12.2
 
 - 修复键盘 HUD 打开后按键没反应：没授权时会误判为「监听成功」，现在如实提示
