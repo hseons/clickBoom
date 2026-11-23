@@ -65,7 +65,6 @@ struct RuntimeStatusView: View {
     private var detail: String {
         switch runtime.status {
         case .disabled: return "打开总开关后恢复全局特效；预览仍可使用。"
-        case .permissionRequired: return "在系统设置中开启输入监控，授权后自动生效。"
         case .paused: return state.pauseRemainingText
         case .quietHours(let schedule): return "\(schedule) 自动静默，结束边界恢复；预览仍可使用。"
         case .excluded: return "切换到其他应用时自动恢复；预览仍可使用。"
@@ -79,7 +78,6 @@ struct RuntimeStatusView: View {
     private var actionTitle: String? {
         switch runtime.status {
         case .disabled: return "开启"
-        case .permissionRequired: return "去授权"
         case .paused: return "恢复"
         case .quietHours: return "免打扰设置"
         case .excluded: return "取消静默"
@@ -92,9 +90,6 @@ struct RuntimeStatusView: View {
     private func resolveStatus() {
         switch runtime.status {
         case .disabled: state.isEnabled = true
-        case .permissionRequired:
-            InputPermission.shared.request()
-            if !InputPermission.shared.isGranted { InputPermission.shared.openSettings() }
         case .paused: state.resume()
         case .excluded:
             if let app = runtime.targetApp { state.removeExcludedApp(app) }

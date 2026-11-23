@@ -4,24 +4,22 @@ import XCTest
 final class RuntimeStatusTests: XCTestCase {
     func testEveryCombinationRespectsStatusPriority() {
         let app = ExcludedApp(bundleID: "test.app", name: "演示")
-        for mask in 0..<64 {
+        for mask in 0..<32 {
             let enabled = mask & 1 != 0
-            let granted = mask & 2 != 0
-            let paused = mask & 4 != 0
-            let excluded = mask & 8 != 0
-            let autoSilence = mask & 16 != 0
-            let fullScreen = mask & 32 != 0
+            let paused = mask & 2 != 0
+            let excluded = mask & 4 != 0
+            let autoSilence = mask & 8 != 0
+            let fullScreen = mask & 16 != 0
             let expected: RuntimeStatus
-            switch (enabled, granted, paused, excluded, autoSilence && fullScreen) {
-            case (false, _, _, _, _): expected = .disabled
-            case (_, false, _, _, _): expected = .permissionRequired
-            case (_, _, true, _, _): expected = .paused
-            case (_, _, _, true, _): expected = .excluded(appName: "演示")
-            case (_, _, _, _, true): expected = .fullScreen(appName: "演示")
+            switch (enabled, paused, excluded, autoSilence && fullScreen) {
+            case (false, _, _, _): expected = .disabled
+            case (_, true, _, _): expected = .paused
+            case (_, _, true, _): expected = .excluded(appName: "演示")
+            case (_, _, _, true): expected = .fullScreen(appName: "演示")
             default: expected = .running
             }
             XCTAssertEqual(RuntimeStatus.resolve(
-                isEnabled: enabled, hasPermission: granted, isPaused: paused,
+                isEnabled: enabled, isPaused: paused,
                 excludedApp: excluded ? app : nil, autoSilenceInFullScreen: autoSilence,
                 isFullScreen: fullScreen, appName: app.name
             ), expected, "组合 \(mask)")
@@ -36,12 +34,11 @@ final class RuntimeStatusTests: XCTestCase {
 
         func resolve(
             enabled: Bool = true,
-            granted: Bool = true,
             paused: Bool = false,
             quietHours: QuietHours = quiet
         ) -> RuntimeStatus {
             RuntimeStatus.resolve(
-                isEnabled: enabled, hasPermission: granted, isPaused: paused,
+                isEnabled: enabled, isPaused: paused,
                 quietHours: quietHours, now: now,
                 excludedApp: app, autoSilenceInFullScreen: true,
                 isFullScreen: true, appName: app.name
@@ -50,7 +47,6 @@ final class RuntimeStatusTests: XCTestCase {
 
         XCTAssertEqual(resolve(), .quietHours(schedule: quiet.scheduleLabel))
         XCTAssertEqual(resolve(enabled: false), .disabled)
-        XCTAssertEqual(resolve(granted: false), .permissionRequired)
         XCTAssertEqual(resolve(paused: true), .paused)
         XCTAssertEqual(
             resolve(quietHours: QuietHours(isEnabled: true, startMinutes: 600, endMinutes: 600)),
@@ -65,7 +61,7 @@ final class RuntimeStatusTests: XCTestCase {
         let quiet = QuietHours(isEnabled: true, startMinutes: 22 * 60, endMinutes: 8 * 60)
 
         let skipped = RuntimeStatus.resolve(
-            isEnabled: true, hasPermission: true, isPaused: false,
+            isEnabled: true, isPaused: false,
             quietHours: quiet, isQuietHoursSkipped: true, now: now,
             excludedApp: nil, autoSilenceInFullScreen: false,
             isFullScreen: false, appName: "前台 App"
@@ -73,7 +69,7 @@ final class RuntimeStatusTests: XCTestCase {
         XCTAssertEqual(skipped, .running)
 
         let skippedButExcluded = RuntimeStatus.resolve(
-            isEnabled: true, hasPermission: true, isPaused: false,
+            isEnabled: true, isPaused: false,
             quietHours: quiet, isQuietHoursSkipped: true, now: now,
             excludedApp: app, autoSilenceInFullScreen: false,
             isFullScreen: false, appName: app.name
@@ -86,7 +82,7 @@ final class RuntimeStatusTests: XCTestCase {
         let quiet = QuietHours(isEnabled: true, startMinutes: 22 * 60, endMinutes: 8 * 60)
         let atEnd = calendar.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 8, minute: 0))!
         let status = RuntimeStatus.resolve(
-            isEnabled: true, hasPermission: true, isPaused: false,
+            isEnabled: true, isPaused: false,
             quietHours: quiet, now: atEnd, excludedApp: nil,
             autoSilenceInFullScreen: false, isFullScreen: false, appName: "前台 App"
         )

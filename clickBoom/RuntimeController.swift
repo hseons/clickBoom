@@ -19,7 +19,7 @@ struct RuntimeContext {
             return ExcludedApp(bundleID: id, name: target.localizedName ?? id)
         }
         let state = AppState.shared
-        let needsFullScreenCheck = state.isEnabled && InputPermission.shared.isGranted && !state.isPaused
+        let needsFullScreenCheck = state.isEnabled && !state.isPaused
             && state.autoSilenceInFullScreen
             && !AppExclusionLogic.isExcluded(bundleID: app?.bundleID, in: state.excludedApps)
         return RuntimeContext(
@@ -154,7 +154,6 @@ final class RuntimeController: ObservableObject {
         }
         let next = RuntimeStatus.resolve(
             isEnabled: state.isEnabled,
-            hasPermission: permission.isGranted,
             isPaused: state.isPaused,
             isPresentationMode: state.isPresentationMode,
             quietHours: state.quietHours,
@@ -198,7 +197,7 @@ final class RuntimeController: ObservableObject {
         // 免打扰时段内不复查全屏：这段时间本来就不显示特效，时段结束时由边界计时器恢复。
         let inQuietHours = state.quietHours.isActive(at: now())
             && !state.isQuietHoursSkipped(at: now())
-        let needsFullScreenCheck = state.isEnabled && permission.isGranted && !state.isPaused
+        let needsFullScreenCheck = state.isEnabled && !state.isPaused
             && !state.isPresentationMode
             && !inQuietHours
             && excluded == nil && snapshot.app != nil && state.autoSilenceInFullScreen

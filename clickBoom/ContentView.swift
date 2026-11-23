@@ -1604,14 +1604,34 @@ final class InputPermission: ObservableObject {
     @Published private(set) var isGranted: Bool
     private let checkAccess: () -> Bool
 
+    /// 授权状态真正翻转时发一次，键盘 HUD 与诊断据此刷新。
+    static let didChangeNotification = Notification.Name("clickBoom.inputPermissionDidChange")
+    private var activationObserver: NSObjectProtocol?
+
     init(checkAccess: @escaping () -> Bool = { CGPreflightListenEventAccess() }) {
         self.checkAccess = checkAccess
         isGranted = checkAccess()
+        // 用户从系统设置切回来时立刻复查，不必手动点刷新。
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    deinit {
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
+        }
     }
 
     func refresh() {
         let granted = checkAccess()
-        if isGranted != granted { isGranted = granted }
+        guard granted != isGranted else { return }
+        isGranted = granted
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }
 
     func request() {
@@ -1622,6 +1642,22 @@ final class InputPermission: ObservableObject {
     func openSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// 输入监控授权后系统要求重启进程才生效；这里帮用户重开一次。
+    func relaunch() {
+        let bundle = Bundle.main.bundleURL
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-n", bundle.path]
+        do {
+            try process.run()
+        } catch {
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            NSApp.terminate(nil)
         }
     }
 }
@@ -2122,6 +2158,7 @@ struct QuickSlider: View {
 // MARK: - 3. 控制面板视图 (Modern UI)
 struct ControlPanelView: View {
     @StateObject var appState = AppState.shared
+    @StateObject private var keystrokeHUD = KeystrokeHUDController.shared
     @StateObject private var loginItem = LaunchAtLogin.shared
     @StateObject private var permission = InputPermission.shared
     @StateObject private var update = UpdateChecker.shared
@@ -2140,6 +2177,11 @@ struct ControlPanelView: View {
     @State private var selectableApps: [ExcludedApp] = []
     @State private var exclusionSearchText = ""
     @State private var settingsBackupMessage: String?
+
+    private var permissionStateText: String {
+        if keystrokeHUD.needsRelaunch { return "已授权，待重启" }
+        return permission.isGranted ? "已开启" : "未开启"
+    }
 
     private let quickColors = ["#FFFFFF", "#66E8FF", "#63F2CE", "#FF77C8", "#FFB45E", "#B48CFF"]
     private let quickEmojis = ["✨", "🔥", "💖", "🎉", "⚡", "💫", "🌸", "🫧"]
@@ -2939,10 +2981,35 @@ struct ControlPanelView: View {
                                     .foregroundColor(.white.opacity(0.45))
                                     .fixedSize(horizontal: false, vertical: true)
 
-                                if !InputPermission.shared.isGranted {
-                                    Label("需要输入监控权限才能读取键盘事件", systemImage: "exclamationmark.shield.fill")
+                                if !permission.isGranted {
+                                    Label("需要输入监控权限才能读取键盘事件；点击特效不受影响", systemImage: "exclamationmark.shield.fill")
                                         .font(.system(size: 11))
                                         .foregroundColor(.orange)
+                                    HStack(spacing: 8) {
+                                        Button("去授权") {
+                                            permission.request()
+                                            if !permission.isGranted { permission.openSettings() }
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .controlSize(.small)
+                                        Button("已授权？重启 App 生效") { permission.relaunch() }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                    }
+                                    Text("系统对输入监控的授权只对新启动的进程生效，勾选后请重启一次 App。")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.35))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                } else if keystrokeHUD.needsRelaunch {
+                                    Label("已授权，但需要重启 App 才能读到键盘事件", systemImage: "arrow.clockwise.circle.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.orange)
+                                    Button("重启 App") { permission.relaunch() }
+                                        .buttonStyle(.borderedProminent)
+                                        .controlSize(.small)
+                                    Text("鼠标点击、拖尾和聚光环现在照常工作。")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.35))
                                 } else if KeystrokeMonitor.shared.isFallbackActive {
                                     Label("当前使用兼容模式监听，部分按键（如功能键）可能不显示", systemImage: "info.circle")
                                         .font(.system(size: 11))
@@ -3040,15 +3107,19 @@ struct ControlPanelView: View {
                             Divider().background(Color.white.opacity(0.1))
 
                             HStack {
-                                Label("输入监控权限",
+                                Label("键盘 HUD 输入监控",
                                       systemImage: permission.isGranted ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundColor(.white.opacity(0.8))
                                 Spacer()
-                                Text(permission.isGranted ? "已开启" : "未开启")
+                                Text(permissionStateText)
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundColor(permission.isGranted ? .green : .orange)
                             }
+                            Text("只影响键盘与快捷键 HUD；点击、拖尾、聚光环和音效都不需要这项权限。")
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.35))
+                                .fixedSize(horizontal: false, vertical: true)
 
                             if !permission.isGranted {
                                 Button {
@@ -3060,6 +3131,16 @@ struct ControlPanelView: View {
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .tint(.orange)
+                            }
+                            if keystrokeHUD.needsRelaunch {
+                                Button {
+                                    permission.relaunch()
+                                } label: {
+                                    Label("重启 App 让授权生效", systemImage: "arrow.clockwise")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
                             }
 
                             Divider().background(Color.white.opacity(0.1))

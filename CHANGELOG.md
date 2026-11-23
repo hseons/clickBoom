@@ -2,6 +2,15 @@
 
 完整版本历史。README 只保留最近两个版本，更早的记录都在这里。
 
+## [1.12.1] - 2026-11-23
+
+- 修复：装上 1.12.0 后点击、拖尾、聚光环全部不出现。原因是运行状态把「输入监控」当成全局闸门——`RuntimeStatus.resolve` 只要发现 `CGPreflightListenEventAccess()` 为假就直接返回「需要授权」，鼠标特效一并被拦下；而 ad-hoc 签名每重新构建一次 cdhash 都变，系统里的旧授权对不上新二进制，于是升级后整机一点效果都没有。现在鼠标相关功能不再依赖任何系统权限，`RuntimeStatus` 里也移除了这个状态，授权只影响键盘 HUD 自己。
+- 修复：「系统设置里已经勾上输入监控，点刷新还是显示未授权」。macOS 对输入监控的授权只对新启动的进程生效，运行中的进程 `CGPreflightListenEventAccess()` 仍旧返回旧值。现在 HUD 卡片会区分「没授权」和「已授权但要重启」，后者给一键重启按钮；App 重新激活（从系统设置切回来）时自动复查一次，不用手点刷新。
+- 键盘 HUD 不再在启动时盲目安装事件 tap：只有开关打开且已授权才创建监听，避免在没有授权的情况下反复触发系统询问；启动失败时把 `needsRelaunch` 置位并在界面说明。
+- 删除没有任何调用方的 `PresentationModeLogic`（演示模式的实际判定在 `RuntimeStatus.resolve` 里），减少一层重复规则。
+- 测试从 146 调整为 145：权限维度从状态优先级用例里去掉，新增断言「撤销输入监控后鼠标特效照常恢复」。
+- 通用 DMG，ad-hoc 签名，未经过 Apple 公证。
+
 ## [1.12.0] - 2026-11-23
 
 - 新增「键盘与快捷键」HUD：用 CGEventTap 只读监听 keyDown / keyUp / flagsChanged，不拦截也不修改任何按键；事件 tap 被系统停掉时按 tapDisabledByTimeout / tapDisabledByUserInput 重建，连续失败 3 次切到 NSEvent 全局监听，并在诊断里标明当前走的是兼容模式。

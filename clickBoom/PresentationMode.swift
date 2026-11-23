@@ -31,22 +31,3 @@ nonisolated struct PresentationSnapshot: Equatable {
         self.keystrokeHUDEnabled = keystrokeHUDEnabled
     }
 }
-
-/// 演示模式的纯规则：什么时候算生效、进入时改哪些值、退出时还原成什么。
-enum PresentationModeLogic {
-    /// 演示模式只在特效本来该工作时才「顶掉」静默规则；
-    /// 关闭、缺权限、暂停这三种情况仍然优先，避免按了快捷键却看不到任何反馈。
-    nonisolated static func isActive(
-        isPresentationMode: Bool,
-        isEnabled: Bool,
-        hasPermission: Bool,
-        isPaused: Bool
-    ) -> Bool {
-        isPresentationMode && isEnabled && hasPermission && !isPaused
-    }
-
-    /// 演示模式生效时是否要继续走免打扰 / 全屏静默的判断。
-    nonisolated static func shouldApplySilenceRules(isActive: Bool) -> Bool {
-        !isActive
-    }
-}

@@ -3,7 +3,6 @@ import Foundation
 /// 面板、监听与覆盖层共用的生效规则，顺序就是提示的优先级。
 nonisolated enum RuntimeStatus: Equatable {
     case disabled
-    case permissionRequired
     case paused
     case quietHours(schedule: String)
     case excluded(appName: String)
@@ -13,7 +12,6 @@ nonisolated enum RuntimeStatus: Equatable {
 
     static func resolve(
         isEnabled: Bool,
-        hasPermission: Bool,
         isPaused: Bool,
         isPresentationMode: Bool = false,
         quietHours: QuietHours = QuietHours(),
@@ -25,7 +23,6 @@ nonisolated enum RuntimeStatus: Equatable {
         appName: String
     ) -> RuntimeStatus {
         if !isEnabled { return .disabled }
-        if !hasPermission { return .permissionRequired }
         if isPaused { return .paused }
         // 演示模式：全屏和免打扰都不再静默，但应用排除仍然尊重。
         if isPresentationMode {
@@ -45,7 +42,6 @@ nonisolated enum RuntimeStatus: Equatable {
     var title: String {
         switch self {
         case .disabled: return "特效已关闭"
-        case .permissionRequired: return "等待输入监控权限"
         case .paused: return "特效已暂停"
         case .quietHours: return "免打扰时段静默中"
         case .excluded(let name): return "已在「\(name)」中静默"
@@ -58,7 +54,6 @@ nonisolated enum RuntimeStatus: Equatable {
     var icon: String {
         switch self {
         case .disabled: return "power"
-        case .permissionRequired: return "exclamationmark.shield.fill"
         case .paused: return "pause.circle.fill"
         case .quietHours: return "moon.zzz.fill"
         case .excluded: return "eye.slash.fill"

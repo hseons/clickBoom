@@ -97,8 +97,11 @@ struct KeystrokeHUDView: View {
 
 /// 独立的键盘 HUD 面板：不抢焦点、不接收鼠标、跟着指针所在的屏幕走。
 @MainActor
-final class KeystrokeHUDController {
+final class KeystrokeHUDController: ObservableObject {
     static let shared = KeystrokeHUDController()
+
+    /// 已授权但事件监听起不来：一般是系统要求重启进程才生效。
+    @Published private(set) var needsRelaunch = false
 
     let model = KeystrokeHUDModel()
     private var panel: NSPanel?
@@ -179,12 +182,18 @@ final class KeystrokeHUDController {
         guard started else { return }
         guard isAllowed else {
             monitor?.stop()
+            needsRelaunch = false
             model.clear()
             hideIfEmpty()
             return
         }
         model.maxRows = AppState.shared.keystrokeHUDLineCount
-        if monitor?.start() == false { return }
+        guard monitor?.start() == true else {
+            needsRelaunch = InputPermission.shared.isGranted
+            monitor?.stop()
+            return
+        }
+        needsRelaunch = false
         lastScale = AppState.shared.keystrokeHUDSize.scale
         if !model.isEmpty {
             panel?.contentView?.layoutSubtreeIfNeeded()

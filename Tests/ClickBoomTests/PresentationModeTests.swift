@@ -116,30 +116,12 @@ final class PresentationModeTests: XCTestCase {
         XCTAssertEqual(HotKeySlot.toggle.rawValue, 1)
     }
 
-    func testPresentationLogicRequiresRunningState() {
-        XCTAssertTrue(PresentationModeLogic.isActive(
-            isPresentationMode: true, isEnabled: true, hasPermission: true, isPaused: false
-        ))
-        XCTAssertFalse(PresentationModeLogic.isActive(
-            isPresentationMode: true, isEnabled: false, hasPermission: true, isPaused: false
-        ))
-        XCTAssertFalse(PresentationModeLogic.isActive(
-            isPresentationMode: true, isEnabled: true, hasPermission: false, isPaused: false
-        ))
-        XCTAssertFalse(PresentationModeLogic.isActive(
-            isPresentationMode: true, isEnabled: true, hasPermission: true, isPaused: true
-        ))
-        XCTAssertTrue(PresentationModeLogic.shouldApplySilenceRules(isActive: false))
-        XCTAssertFalse(PresentationModeLogic.shouldApplySilenceRules(isActive: true))
-    }
-
     func testPresentationStatusSkipsQuietHoursAndFullScreen() {
         let app = ExcludedApp(bundleID: "test.app", name: "演示")
         let quietHours = QuietHours(isEnabled: true, startMinutes: 0, endMinutes: 23 * 60 + 59)
 
         let presenting = RuntimeStatus.resolve(
             isEnabled: true,
-            hasPermission: true,
             isPaused: false,
             isPresentationMode: true,
             quietHours: quietHours,
@@ -159,14 +141,14 @@ final class PresentationModeTests: XCTestCase {
 
         XCTAssertEqual(
             RuntimeStatus.resolve(
-                isEnabled: true, hasPermission: true, isPaused: true, isPresentationMode: true,
+                isEnabled: true, isPaused: true, isPresentationMode: true,
                 excludedApp: nil, autoSilenceInFullScreen: false, isFullScreen: false, appName: "Keynote"
             ),
             .paused
         )
         XCTAssertEqual(
             RuntimeStatus.resolve(
-                isEnabled: true, hasPermission: true, isPaused: false, isPresentationMode: true,
+                isEnabled: true, isPaused: false, isPresentationMode: true,
                 excludedApp: app, autoSilenceInFullScreen: false, isFullScreen: false, appName: "Keynote"
             ),
             .excluded(appName: "演示")

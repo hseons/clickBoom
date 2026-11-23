@@ -73,7 +73,7 @@ final class RuntimeControllerTests: XCTestCase {
     }
 
     @MainActor
-    func testPauseAndPermissionRevocationClearAndRestore() {
+    func testPauseStopsEffectsAndPermissionRevocationKeepsMouseRunning() {
         withRuntime { state, engine, permission, runtime, _, setPointer, setGranted in
             runtime.refresh()
             engine.trigger(at: .zero)
@@ -82,19 +82,21 @@ final class RuntimeControllerTests: XCTestCase {
             XCTAssertEqual(runtime.status, .paused)
             XCTAssertTrue(engine.particles.isEmpty)
             XCTAssertNil(engine.pointerPosition)
+            // 输入监控只服务键盘 HUD，撤销授权后鼠标特效照常恢复
             setGranted(false)
             permission.refresh()
             runtime.refresh()
-            XCTAssertEqual(runtime.status, .permissionRequired)
+            XCTAssertEqual(runtime.status, .paused)
             state.resume()
             runtime.refresh()
-            XCTAssertEqual(runtime.status, .permissionRequired)
+            XCTAssertEqual(runtime.status, .running)
             setPointer(CGPoint(x: 200, y: 300))
+            runtime.refresh()
+            XCTAssertEqual(engine.pointerPosition, CGPoint(x: 200, y: 300))
             setGranted(true)
             permission.refresh()
             runtime.refresh()
             XCTAssertEqual(runtime.status, .running)
-            XCTAssertEqual(engine.pointerPosition, CGPoint(x: 200, y: 300))
         }
     }
 
